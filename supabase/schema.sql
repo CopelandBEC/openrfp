@@ -1,5 +1,5 @@
-# Database schema for OpenRFP
-# Run this in the Supabase SQL Editor (Dashboard → SQL → New query)
+-- Database schema for OpenRFP
+-- Run this in the Supabase SQL Editor (Dashboard → SQL → New query)
 
 -- ============================================
 -- Extensions
@@ -162,7 +162,7 @@ create policy "responses_update_own" on public.responses
   );
 create policy "responses_delete_own" on public.responses
   for delete using (
-    exists (select 1 from public rfps where rfps.id = responses.rfp_id and rfps.owner_id = auth.uid())
+    exists (select 1 from public.rfps where rfps.id = responses.rfp_id and rfps.owner_id = auth.uid())
   );
 
 -- Evaluations: users can only see evaluations for their own RFPs
