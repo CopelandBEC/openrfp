@@ -109,6 +109,7 @@ export async function POST(request: NextRequest) {
 
   return NextResponse.json({
     response_id: responseRecord.id,
+    file_path: fileName,
     ocr_status: ocrStatus,
     page_count: pageCount,
     message:
