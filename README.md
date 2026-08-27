@@ -1,36 +1,89 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# OpenRFP
 
-## Getting Started
+**AI-powered RFP evaluation tool for institutional facilities management.**
 
-First, run the development server:
+Free, open source, and transparent. Upload your RFP, get an AI-generated evaluation rubric, upload vendor responses, and receive scored evaluations with cited evidence.
+
+Built by [Copeland Building Envelope Consulting](https://copelandbec.com) as an open-source contribution to the industry.
+
+## How it works
+
+1. **Upload your RFP** — The AI reads it and generates a customized evaluation rubric with weighted criteria and scoring scales, specialized for building envelope and facilities management projects.
+2. **Upload vendor responses** — The AI evaluates each response against the rubric, scoring each criterion with a rationale and a direct quote from the proposal as evidence.
+3. **Compare and decide** — Get a side-by-side ranking with comparative analysis, close-call flags, and recommended interview questions. Override any score you disagree with.
+
+## Transparency
+
+Every evaluation prompt, scoring rubric, and comparison logic is visible in this repository. You can see exactly how the AI is instructed to evaluate proposals. See [`src/lib/prompts/`](src/lib/prompts/) for the prompt source code.
+
+## Tech stack
+
+- **Frontend:** Next.js 15 + React + TypeScript + shadcn/ui + Tailwind CSS
+- **Backend:** Supabase (PostgreSQL + Auth + Storage + Row-Level Security)
+- **AI:** Fireworks AI (model-agnostic architecture — switch models via env vars)
+- **Hosting:** Vercel
+
+## Getting started
+
+### Prerequisites
+
+- Node.js 18+ 
+- A [Supabase](https://supabase.com) account (free tier)
+- A [Fireworks AI](https://fireworks.ai) API key
+- A [Vercel](https://vercel.com) account (for deployment)
+
+### Installation
+
+```bash
+git clone https://github.com/CopelandBEC/openrfp.git
+cd openrfp
+npm install
+```
+
+### Environment setup
+
+Copy `.env.example` to `.env.local` and fill in your credentials:
+
+```bash
+cp .env.example .env.local
+```
+
+### Database setup
+
+1. Create a new Supabase project
+2. Run the SQL in `supabase/schema.sql` in the Supabase SQL Editor
+3. Copy your Supabase URL and keys to `.env.local`
+
+### Development
 
 ```bash
 npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+Open [http://localhost:3000](http://localhost:3000) to see the app.
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+### Deployment
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+Deploy to Vercel with one click — just connect the GitHub repo and add your environment variables.
 
-## Learn More
+## Configuration
 
-To learn more about Next.js, take a look at the following resources:
+### Switching AI models
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+The app uses a model-agnostic architecture. To change the AI model, just update environment variables:
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
+```env
+AI_PROVIDER=fireworks
+AI_MODEL=accounts/fireworks/models/kimi-k3
+AI_BASE_URL=https://api.fireworks.ai/inference/v1
+```
 
-## Deploy on Vercel
+Any OpenAI-compatible API works. See `.env.example` for all options.
 
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
+## Contributing
 
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+Contributions are welcome. CopelandBEC maintains this project. See [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines.
+
+## License
+
+MIT — see [LICENSE](LICENSE)
