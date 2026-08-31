@@ -1,5 +1,3 @@
-import fs from "fs";
-
 export interface PdfExtractionResult {
   text: string;
   pageCount: number;
@@ -8,18 +6,22 @@ export interface PdfExtractionResult {
 }
 
 /**
- * Extract text from a PDF file using pdf-parse (PDFParse class).
+ * Extract text from a PDF using pdf-parse (PDFParse class).
  * Returns the extracted text, page count, and an OCR heuristic.
+ *
+ * Takes the bytes directly rather than a path: writing the upload to /tmp
+ * first meant an attacker-controlled filename landed in a filesystem path,
+ * and the cleanup unlink was not in a finally block.
  */
 export async function extractPdfText(
-  filePath: string
+  data: Uint8Array
 ): Promise<PdfExtractionResult> {
+  let parser: { getText: () => Promise<{ text?: string; pages?: unknown[] }>; destroy: () => Promise<void> } | null =
+    null;
   try {
     const { PDFParse } = await import("pdf-parse");
-    const dataBuffer = fs.readFileSync(filePath);
-    const data = new Uint8Array(dataBuffer);
 
-    const parser = new PDFParse({ data });
+    parser = new PDFParse({ data });
     const result = await parser.getText();
 
     const text = result.text || "";
@@ -27,8 +29,6 @@ export async function extractPdfText(
     const textPerPage = text.length / pageCount;
     // Heuristic: if average text per page is < 100 chars, likely scanned
     const likelyScanned = textPerPage < 100;
-
-    await parser.destroy();
 
     return {
       text,
@@ -43,5 +43,7 @@ export async function extractPdfText(
       textPerPage: 0,
       likelyScanned: true, // If parsing fails, assume it's scanned/image-based
     };
+  } finally {
+    await parser?.destroy().catch(() => {});
   }
 }

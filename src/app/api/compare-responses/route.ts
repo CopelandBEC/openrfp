@@ -1,7 +1,35 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createClient } from "@/lib/supabase/server";
 import { createAIClient, getModelId } from "@/lib/ai/client";
-import { buildComparisonPrompt } from "@/lib/prompts/compare-responses";
+import {
+  buildComparisonPrompt,
+  PROMPT_VERSION,
+} from "@/lib/prompts/compare-responses";
+import { rateLimitResponse, reserveAICall } from "@/lib/rate-limit";
+
+// Model calls routinely run past the platform default; without this the
+// function is killed mid-evaluation and the response is left at 'error'.
+export const maxDuration = 300;
+
+/** Shape of the `evaluations` select below. */
+interface EvaluationRow {
+  id: string;
+  response_id: string;
+  rfp_id: string;
+  scores: Record<string, unknown> | null;
+  overall_score: number | null;
+  summary: string | null;
+  strengths: string[] | null;
+  weaknesses: string[] | null;
+  model_used: string | null;
+}
+
+/** Shape of the `responses` select below. */
+interface ResponseRow {
+  id: string;
+  vendor_name: string;
+}
+
 
 export async function POST(request: NextRequest) {
   const supabase = await createClient();
@@ -60,21 +88,30 @@ export async function POST(request: NextRequest) {
   }
 
   // Fetch vendor names for each response
-  const responseIds = evaluations.map((e: any) => e.response_id);
+  const responseIds = evaluations.map((e: EvaluationRow) => e.response_id);
   const { data: responses } = await supabase
     .from("responses")
     .select("id, vendor_name")
     .in("id", responseIds);
 
-  const vendorMap = new Map(
-    (responses || []).map((r: any) => [r.id, r.vendor_name])
+  const vendorMap = new Map<string, string>(
+    (responses || []).map((r: ResponseRow) => [r.id, r.vendor_name])
   );
 
   // Build evaluations JSON with vendor names
-  const evaluationsWithVendors = evaluations.map((e: any) => ({
+  const evaluationsWithVendors = evaluations.map((e: EvaluationRow) => ({
     ...e,
     vendor_name: vendorMap.get(e.response_id) || "Unknown",
   }));
+
+  const rateLimit = await reserveAICall(
+    supabase,
+    user.id,
+    "compare_responses"
+  );
+  if (!rateLimit.allowed) {
+    return rateLimitResponse(rateLimit);
+  }
 
   // Call AI
   const client = createAIClient();
@@ -105,14 +142,18 @@ export async function POST(request: NextRequest) {
     // Save comparison
     const { data: savedComparison, error: comparisonError } = await supabase
       .from("comparisons")
-      .upsert({
-        rfp_id,
-        ranking: comparison.ranking,
-        comparative_analysis: comparison.comparative_analysis,
-        close_calls: comparison.close_calls || [],
-        model_used: model,
-        prompt_version: "1.0.0",
-      })
+      .upsert(
+        {
+          rfp_id,
+          ranking: comparison.ranking,
+          comparative_analysis: comparison.comparative_analysis,
+          close_calls: comparison.close_calls || [],
+          interview_focus_areas: comparison.interview_focus_areas || [],
+          model_used: model,
+          prompt_version: PROMPT_VERSION,
+        },
+        { onConflict: "rfp_id" }
+      )
       .select()
       .single();
 

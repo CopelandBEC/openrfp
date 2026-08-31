@@ -104,8 +104,15 @@ export default function NewRfpPage() {
           </div>
 
           <div className="space-y-2">
-            <label className="text-sm font-medium">RFP Document</label>
-            <div
+            <label htmlFor="rfp-file" className="text-sm font-medium">
+              RFP Document
+            </label>
+            {/* A <label> rather than a div with an onClick: the file input is
+                visually hidden, and a label forwards both mouse and keyboard
+                activation to it. The previous markup advertised "browse" but
+                nothing opened the picker — only drag-and-drop worked. */}
+            <label
+              htmlFor="rfp-file"
               className="flex min-h-[120px] cursor-pointer flex-col items-center justify-center rounded-lg border-2 border-dashed border-muted-foreground/30 p-6 transition-colors hover:border-muted-foreground/50"
               onDrop={(e) => {
                 e.preventDefault();
@@ -128,19 +135,20 @@ export default function NewRfpPage() {
                     <span className="text-primary">browse</span>
                   </p>
                   <p className="mt-1 text-xs text-muted-foreground">
-                    PDF or DOCX, max 25MB
+                    PDF, max 25MB
                   </p>
                 </div>
               )}
               <input
+                id="rfp-file"
                 type="file"
-                accept=".pdf,.docx,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document"
-                className="hidden"
+                accept=".pdf,application/pdf"
+                className="sr-only"
                 onChange={(e) => {
                   if (e.target.files?.[0]) setFile(e.target.files[0]);
                 }}
               />
-            </div>
+            </label>
           </div>
 
           {error && (

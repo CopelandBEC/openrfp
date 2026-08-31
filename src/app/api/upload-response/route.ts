@@ -2,6 +2,9 @@ import { NextRequest, NextResponse } from "next/server";
 import { createClient } from "@/lib/supabase/server";
 import { extractPdfText } from "@/lib/pdf/extract-text";
 
+// Parsing a large PDF can outrun the platform default.
+export const maxDuration = 60;
+
 export async function POST(request: NextRequest) {
   const supabase = await createClient();
   const {
@@ -32,21 +35,24 @@ export async function POST(request: NextRequest) {
     );
   }
 
-  // Validate file type
-  const allowedTypes = [
-    "application/pdf",
-    "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-  ];
-  if (!allowedTypes.includes(file.type)) {
+  // Validate file type. DOCX is deliberately rejected rather than accepted:
+  // extraction below is PDF-only, so a DOCX upload used to succeed, store an
+  // empty rfp_text, and then fail a step later with a misleading "needs OCR"
+  // message. Native DOCX parsing is a roadmap item (SPEC section 13).
+  if (file.type !== "application/pdf") {
     return NextResponse.json(
-      { error: "Only PDF and DOCX files are supported." },
+      {
+        error:
+          "Only PDF files are supported right now. If you have a Word " +
+          "document, export it to PDF and upload that.",
+      },
       { status: 400 }
     );
   }
 
   // Upload to storage
   const fileName = `${user.id}/${rfpId}/${Date.now()}-${file.name}`;
-  const { data: uploadData, error: uploadError } = await supabase.storage
+  const { error: uploadError } = await supabase.storage
     .from("rfp-files")
     .upload(fileName, file);
 
@@ -57,25 +63,13 @@ export async function POST(request: NextRequest) {
     );
   }
 
-  // Extract text and check OCR
-  let extractedText = "";
-  let ocrStatus = "unknown";
-  let pageCount = 0;
-
-  if (file.type === "application/pdf") {
-    const bytes = await file.arrayBuffer();
-    const buffer = Buffer.from(bytes);
-    const tempPath = `/tmp/${Date.now()}-${file.name}`;
-    const fs = await import("fs");
-    fs.writeFileSync(tempPath, buffer);
-
-    const result = await extractPdfText(tempPath);
-    extractedText = result.text;
-    pageCount = result.pageCount;
-    ocrStatus = result.likelyScanned ? "flagged" : "ok";
-
-    fs.unlinkSync(tempPath);
-  }
+  // Extract text and flag PDFs that appear to lack an OCR layer
+  const {
+    text: extractedText,
+    pageCount,
+    likelyScanned,
+  } = await extractPdfText(new Uint8Array(await file.arrayBuffer()));
+  const ocrStatus = likelyScanned ? "flagged" : "ok";
 
   // Create response record
   const { data: responseRecord, error: responseError } = await supabase

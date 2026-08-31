@@ -4,7 +4,15 @@ import { createClient } from "@/lib/supabase/server";
 export async function GET(request: Request) {
   const { searchParams, origin } = new URL(request.url);
   const code = searchParams.get("code");
-  const next = searchParams.get("next") || "/dashboard";
+  // Only accept a same-origin path. A leading "//" or a scheme would let a
+  // crafted link bounce the user off-site after a successful sign-in.
+  const requestedNext = searchParams.get("next");
+  const next =
+    requestedNext &&
+    requestedNext.startsWith("/") &&
+    !requestedNext.startsWith("//")
+      ? requestedNext
+      : "/dashboard";
 
   if (code) {
     const supabase = await createClient();

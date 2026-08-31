@@ -1,7 +1,20 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createClient } from "@/lib/supabase/server";
-import { createAIClient, getModelId } from "@/lib/ai/client";
-import { buildEvaluationPrompt } from "@/lib/prompts/evaluate-response";
+import {
+  createAIClient,
+  getModelId,
+  truncateForModel,
+} from "@/lib/ai/client";
+import {
+  buildEvaluationPrompt,
+  PROMPT_VERSION,
+} from "@/lib/prompts/evaluate-response";
+import { rateLimitResponse, reserveAICall } from "@/lib/rate-limit";
+
+// Model calls routinely run past the platform default; without this the
+// function is killed mid-evaluation and the response is left at 'error'.
+export const maxDuration = 300;
+
 
 export async function POST(request: NextRequest) {
   const supabase = await createClient();
@@ -74,6 +87,15 @@ export async function POST(request: NextRequest) {
     );
   }
 
+  const rateLimit = await reserveAICall(
+    supabase,
+    user.id,
+    "evaluate_response"
+  );
+  if (!rateLimit.allowed) {
+    return rateLimitResponse(rateLimit);
+  }
+
   // Update status to evaluating
   await supabase
     .from("responses")
@@ -83,9 +105,12 @@ export async function POST(request: NextRequest) {
   // Call AI
   const client = createAIClient();
   const model = getModelId();
+  const { text: responseText, truncated } = truncateForModel(
+    responseRecord.extracted_text
+  );
   const { system, user: userPrompt } = buildEvaluationPrompt(
     JSON.stringify(rubric.criteria),
-    responseRecord.extracted_text,
+    responseText,
     responseRecord.vendor_name
   );
 
@@ -124,17 +149,20 @@ export async function POST(request: NextRequest) {
     // Save evaluation
     const { data: savedEval, error: evalError } = await supabase
       .from("evaluations")
-      .upsert({
-        response_id: response_id,
-        rfp_id: responseRecord.rfp_id,
-        scores: evaluation.scores,
-        overall_score: overallScore,
-        summary: evaluation.overall_summary,
-        strengths: evaluation.strengths,
-        weaknesses: evaluation.weaknesses,
-        model_used: model,
-        prompt_version: "1.0.0",
-      })
+      .upsert(
+        {
+          response_id: response_id,
+          rfp_id: responseRecord.rfp_id,
+          scores: evaluation.scores,
+          overall_score: overallScore,
+          summary: evaluation.overall_summary,
+          strengths: evaluation.strengths,
+          weaknesses: evaluation.weaknesses,
+          model_used: model,
+          prompt_version: PROMPT_VERSION,
+        },
+        { onConflict: "response_id" }
+      )
       .select()
       .single();
 
@@ -158,6 +186,7 @@ export async function POST(request: NextRequest) {
         vendor_name: responseRecord.vendor_name,
         model,
         overall_score: overallScore,
+        truncated,
       },
     });
 
