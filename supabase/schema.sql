@@ -110,6 +110,21 @@ create table if not exists public.audit_log (
 );
 
 -- ============================================
+-- AI usage (rate limiting)
+-- ============================================
+-- A row is inserted BEFORE each model call, not after, so concurrent requests
+-- contend over the INSERT rather than over the several seconds an AI call takes.
+create table if not exists public.ai_usage (
+  id uuid primary key default gen_random_uuid(),
+  user_id uuid references auth.users on delete cascade not null,
+  action text not null,
+  created_at timestamptz default now()
+);
+
+create index if not exists ai_usage_user_created_idx
+  on public.ai_usage (user_id, created_at desc);
+
+-- ============================================
 -- Row Level Security
 -- ============================================
 
@@ -242,6 +257,16 @@ create policy "audit_log_select_own" on public.audit_log
   );
 drop policy if exists "audit_log_insert_own" on public.audit_log;
 create policy "audit_log_insert_own" on public.audit_log
+  for insert with check (auth.uid() = user_id);
+
+-- AI usage: users can only see and record their own usage. No update or delete
+-- policy — a caller must not be able to erase their way back under the limit.
+alter table public.ai_usage enable row level security;
+drop policy if exists "ai_usage_select_own" on public.ai_usage;
+create policy "ai_usage_select_own" on public.ai_usage
+  for select using (auth.uid() = user_id);
+drop policy if exists "ai_usage_insert_own" on public.ai_usage;
+create policy "ai_usage_insert_own" on public.ai_usage
   for insert with check (auth.uid() = user_id);
 
 -- ============================================

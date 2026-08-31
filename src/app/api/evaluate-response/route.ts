@@ -5,6 +5,12 @@ import {
   buildEvaluationPrompt,
   PROMPT_VERSION,
 } from "@/lib/prompts/evaluate-response";
+import { rateLimitResponse, reserveAICall } from "@/lib/rate-limit";
+
+// Model calls routinely run past the platform default; without this the
+// function is killed mid-evaluation and the response is left at 'error'.
+export const maxDuration = 300;
+
 
 export async function POST(request: NextRequest) {
   const supabase = await createClient();
@@ -75,6 +81,15 @@ export async function POST(request: NextRequest) {
       },
       { status: 400 }
     );
+  }
+
+  const rateLimit = await reserveAICall(
+    supabase,
+    user.id,
+    "evaluate_response"
+  );
+  if (!rateLimit.allowed) {
+    return rateLimitResponse(rateLimit);
   }
 
   // Update status to evaluating

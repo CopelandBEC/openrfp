@@ -34,11 +34,8 @@ interface Response {
 // ---------------------------------------------------------------------------
 
 const MAX_FILE_SIZE = 25 * 1024 * 1024; // 25MB
-const ALLOWED_EXTENSIONS = [".pdf", ".docx"];
-const ALLOWED_MIME_TYPES = [
-  "application/pdf",
-  "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-];
+const ALLOWED_EXTENSIONS = [".pdf"];
+const ALLOWED_MIME_TYPES = ["application/pdf"];
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -50,7 +47,7 @@ function validateFile(file: File): string | null {
   }
   const ext = file.name.toLowerCase().slice(file.name.lastIndexOf("."));
   if (!ALLOWED_EXTENSIONS.includes(ext) && !ALLOWED_MIME_TYPES.includes(file.type)) {
-    return "Only PDF and DOCX files are supported.";
+    return "Only PDF files are supported right now. Export Word documents to PDF first.";
   }
   return null;
 }
@@ -430,7 +427,7 @@ export default function ResponsesPage({
               </div>
 
               <div className="space-y-2">
-                <Label htmlFor="file-input">Proposal Document (PDF or DOCX, max 25MB)</Label>
+                <Label htmlFor="file-input">Proposal Document (PDF, max 25MB)</Label>
                 <div
                   className="flex min-h-[80px] cursor-pointer flex-col items-center justify-center rounded-lg border-2 border-dashed border-border bg-muted p-4 transition-colors hover:border-primary/50"
                   onClick={() =>
@@ -453,13 +450,13 @@ export default function ResponsesPage({
                     </p>
                   ) : (
                     <p className="text-sm text-muted-foreground">
-                      Drop PDF/DOCX here or click to browse
+                      Drop a PDF here or click to browse
                     </p>
                   )}
                   <input
                     id="file-input"
                     type="file"
-                    accept=".pdf,.docx"
+                    accept=".pdf,application/pdf"
                     className="hidden"
                     onChange={(e) => {
                       if (e.target.files?.[0]) {

@@ -5,6 +5,12 @@ import {
   buildComparisonPrompt,
   PROMPT_VERSION,
 } from "@/lib/prompts/compare-responses";
+import { rateLimitResponse, reserveAICall } from "@/lib/rate-limit";
+
+// Model calls routinely run past the platform default; without this the
+// function is killed mid-evaluation and the response is left at 'error'.
+export const maxDuration = 300;
+
 
 export async function POST(request: NextRequest) {
   const supabase = await createClient();
@@ -78,6 +84,15 @@ export async function POST(request: NextRequest) {
     ...e,
     vendor_name: vendorMap.get(e.response_id) || "Unknown",
   }));
+
+  const rateLimit = await reserveAICall(
+    supabase,
+    user.id,
+    "compare_responses"
+  );
+  if (!rateLimit.allowed) {
+    return rateLimitResponse(rateLimit);
+  }
 
   // Call AI
   const client = createAIClient();
