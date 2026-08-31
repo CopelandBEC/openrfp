@@ -243,12 +243,14 @@ export default function RubricPage({
 
       const { error: saveError } = await supabase
         .from("rubrics")
-        .upsert({
-          rfp_id: id,
-          criteria: criteriaPayload,
-          edited_by_user: true,
-        })
-        .eq("rfp_id", id);
+        .upsert(
+          {
+            rfp_id: id,
+            criteria: criteriaPayload,
+            edited_by_user: true,
+          },
+          { onConflict: "rfp_id" }
+        );
 
       if (saveError) {
         throw new Error(saveError.message);

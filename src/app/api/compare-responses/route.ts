@@ -1,7 +1,10 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createClient } from "@/lib/supabase/server";
 import { createAIClient, getModelId } from "@/lib/ai/client";
-import { buildComparisonPrompt } from "@/lib/prompts/compare-responses";
+import {
+  buildComparisonPrompt,
+  PROMPT_VERSION,
+} from "@/lib/prompts/compare-responses";
 
 export async function POST(request: NextRequest) {
   const supabase = await createClient();
@@ -105,14 +108,18 @@ export async function POST(request: NextRequest) {
     // Save comparison
     const { data: savedComparison, error: comparisonError } = await supabase
       .from("comparisons")
-      .upsert({
-        rfp_id,
-        ranking: comparison.ranking,
-        comparative_analysis: comparison.comparative_analysis,
-        close_calls: comparison.close_calls || [],
-        model_used: model,
-        prompt_version: "1.0.0",
-      })
+      .upsert(
+        {
+          rfp_id,
+          ranking: comparison.ranking,
+          comparative_analysis: comparison.comparative_analysis,
+          close_calls: comparison.close_calls || [],
+          interview_focus_areas: comparison.interview_focus_areas || [],
+          model_used: model,
+          prompt_version: PROMPT_VERSION,
+        },
+        { onConflict: "rfp_id" }
+      )
       .select()
       .single();
 

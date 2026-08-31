@@ -1,7 +1,10 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createClient } from "@/lib/supabase/server";
 import { createAIClient, getModelId } from "@/lib/ai/client";
-import { buildEvaluationPrompt } from "@/lib/prompts/evaluate-response";
+import {
+  buildEvaluationPrompt,
+  PROMPT_VERSION,
+} from "@/lib/prompts/evaluate-response";
 
 export async function POST(request: NextRequest) {
   const supabase = await createClient();
@@ -124,17 +127,20 @@ export async function POST(request: NextRequest) {
     // Save evaluation
     const { data: savedEval, error: evalError } = await supabase
       .from("evaluations")
-      .upsert({
-        response_id: response_id,
-        rfp_id: responseRecord.rfp_id,
-        scores: evaluation.scores,
-        overall_score: overallScore,
-        summary: evaluation.overall_summary,
-        strengths: evaluation.strengths,
-        weaknesses: evaluation.weaknesses,
-        model_used: model,
-        prompt_version: "1.0.0",
-      })
+      .upsert(
+        {
+          response_id: response_id,
+          rfp_id: responseRecord.rfp_id,
+          scores: evaluation.scores,
+          overall_score: overallScore,
+          summary: evaluation.overall_summary,
+          strengths: evaluation.strengths,
+          weaknesses: evaluation.weaknesses,
+          model_used: model,
+          prompt_version: PROMPT_VERSION,
+        },
+        { onConflict: "response_id" }
+      )
       .select()
       .single();
 

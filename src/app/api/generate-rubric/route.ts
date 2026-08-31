@@ -1,7 +1,10 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createClient } from "@/lib/supabase/server";
 import { createAIClient, getModelId } from "@/lib/ai/client";
-import { buildRubricPrompt } from "@/lib/prompts/generate-rubric";
+import {
+  buildRubricPrompt,
+  PROMPT_VERSION,
+} from "@/lib/prompts/generate-rubric";
 
 export async function POST(request: NextRequest) {
   const supabase = await createClient();
@@ -69,13 +72,16 @@ export async function POST(request: NextRequest) {
     // Save rubric to database
     const { data: savedRubric, error: rubricError } = await supabase
       .from("rubrics")
-      .insert({
-        rfp_id: rfp.id,
-        criteria: rubric,
-        ai_generated: true,
-        edited_by_user: false,
-        locked: false,
-      })
+      .upsert(
+        {
+          rfp_id: rfp.id,
+          criteria: rubric,
+          ai_generated: true,
+          edited_by_user: false,
+          locked: false,
+        },
+        { onConflict: "rfp_id" }
+      )
       .select()
       .single();
 
@@ -97,7 +103,7 @@ export async function POST(request: NextRequest) {
       rfp_id: rfp.id,
       user_id: user.id,
       action: "generate_rubric",
-      details: { model, prompt_version: "1.0.0" },
+      details: { model, prompt_version: PROMPT_VERSION },
     });
 
     return NextResponse.json({ rubric: savedRubric });
