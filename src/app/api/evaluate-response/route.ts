@@ -1,6 +1,10 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createClient } from "@/lib/supabase/server";
-import { createAIClient, getModelId } from "@/lib/ai/client";
+import {
+  createAIClient,
+  getModelId,
+  truncateForModel,
+} from "@/lib/ai/client";
 import {
   buildEvaluationPrompt,
   PROMPT_VERSION,
@@ -101,9 +105,12 @@ export async function POST(request: NextRequest) {
   // Call AI
   const client = createAIClient();
   const model = getModelId();
+  const { text: responseText, truncated } = truncateForModel(
+    responseRecord.extracted_text
+  );
   const { system, user: userPrompt } = buildEvaluationPrompt(
     JSON.stringify(rubric.criteria),
-    responseRecord.extracted_text,
+    responseText,
     responseRecord.vendor_name
   );
 
@@ -179,6 +186,7 @@ export async function POST(request: NextRequest) {
         vendor_name: responseRecord.vendor_name,
         model,
         overall_score: overallScore,
+        truncated,
       },
     });
 

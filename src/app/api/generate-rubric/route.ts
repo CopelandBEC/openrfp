@@ -1,6 +1,10 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createClient } from "@/lib/supabase/server";
-import { createAIClient, getModelId } from "@/lib/ai/client";
+import {
+  createAIClient,
+  getModelId,
+  truncateForModel,
+} from "@/lib/ai/client";
 import {
   buildRubricPrompt,
   PROMPT_VERSION,
@@ -57,7 +61,8 @@ export async function POST(request: NextRequest) {
   // Call AI to generate rubric
   const client = createAIClient();
   const model = getModelId();
-  const { system, user: userPrompt } = buildRubricPrompt(rfp.rfp_text);
+  const { text: rfpText, truncated } = truncateForModel(rfp.rfp_text);
+  const { system, user: userPrompt } = buildRubricPrompt(rfpText);
 
   try {
     const response = await client.chat.completions.create({
@@ -114,7 +119,7 @@ export async function POST(request: NextRequest) {
       rfp_id: rfp.id,
       user_id: user.id,
       action: "generate_rubric",
-      details: { model, prompt_version: PROMPT_VERSION },
+      details: { model, prompt_version: PROMPT_VERSION, truncated },
     });
 
     return NextResponse.json({ rubric: savedRubric });

@@ -291,6 +291,26 @@ create trigger on_auth_user_created
   for each row execute function public.handle_new_user();
 
 -- ============================================
+-- Keep rfps.updated_at current
+-- ============================================
+-- The column had a default but nothing ever advanced it, so every row read
+-- back as "last updated at creation".
+create or replace function public.touch_updated_at()
+returns trigger
+language plpgsql
+as $$
+begin
+  new.updated_at = now();
+  return new;
+end;
+$$;
+
+drop trigger if exists rfps_touch_updated_at on public.rfps;
+create trigger rfps_touch_updated_at
+  before update on public.rfps
+  for each row execute function public.touch_updated_at();
+
+-- ============================================
 -- Storage bucket for RFP and response files
 -- ============================================
 insert into storage.buckets (id, name, public) values ('rfp-files', 'rfp-files', false)
