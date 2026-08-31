@@ -116,13 +116,11 @@ function CriterionCard({
   criterion,
   scoreEntry,
   evaluationId,
-  rubric,
   onOverride,
 }: {
   criterion: RubricCriterion;
   scoreEntry: ScoreEntry;
   evaluationId: string;
-  rubric: Rubric | null;
   onOverride: (
     evaluationId: string,
     criterionId: string,
@@ -278,9 +276,9 @@ export default function EvaluationsPage({
   // Data fetching
   // -------------------------------------------------------------------------
 
+  // See the note in responses/page.tsx: no synchronous setState ahead of the
+  // first await, since this only runs from an effect.
   const fetchEvaluations = useCallback(async () => {
-    setLoading(true);
-    setError("");
     try {
       const [evalsRes, responsesRes, rubricRes] = await Promise.all([
         supabase
@@ -346,6 +344,11 @@ export default function EvaluationsPage({
   }, [id, supabase]);
 
   useEffect(() => {
+    // Client-side data fetch. The rule flags any effect that can transitively
+    // reach setState and does not trace awaits, so it cannot tell this apart
+    // from the cascading-render anti-pattern it targets. The real fix is to
+    // load this data in a server component; tracked as a follow-up.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     fetchEvaluations();
   }, [fetchEvaluations]);
 
@@ -542,7 +545,6 @@ export default function EvaluationsPage({
                               criterion={criterion}
                               scoreEntry={scoreEntry}
                               evaluationId={evaluation.id}
-                              rubric={rubric}
                               onOverride={handleOverride}
                             />
                           );

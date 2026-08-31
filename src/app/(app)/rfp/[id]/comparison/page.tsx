@@ -218,13 +218,11 @@ export default function ComparisonPage({
 
   // -- fetch all data -------------------------------------------------------
 
+  // No synchronous setState ahead of the first await — this runs from an
+  // effect. (The old `silent` option existed only to suppress the eager
+  // setLoading, so it no longer has anything to suppress.)
   const fetchData = useCallback(
-    async (options?: { silent?: boolean }) => {
-      if (!options?.silent) {
-        setLoading(true);
-      }
-      setError(null);
-
+    async () => {
       try {
         const [
           comparisonRes,
@@ -259,6 +257,7 @@ export default function ComparisonPage({
         setEvaluations((evaluationsRes.data as Evaluation[]) ?? []);
         setResponses((responsesRes.data as Response[]) ?? []);
         setRubric((rubricRes.data as Rubric) ?? null);
+        setError(null);
       } catch (err) {
         setError(
           err instanceof Error ? err.message : "Failed to load comparison data"
@@ -271,6 +270,11 @@ export default function ComparisonPage({
   );
 
   useEffect(() => {
+    // Client-side data fetch. The rule flags any effect that can transitively
+    // reach setState and does not trace awaits, so it cannot tell this apart
+    // from the cascading-render anti-pattern it targets. The real fix is to
+    // load this data in a server component; tracked as a follow-up.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     fetchData();
   }, [fetchData]);
 
@@ -292,7 +296,7 @@ export default function ComparisonPage({
         throw new Error(body.error || `HTTP ${res.status}`);
       }
 
-      await fetchData({ silent: true });
+      await fetchData();
     } catch (err) {
       setError(
         err instanceof Error ? err.message : "Failed to generate comparison"

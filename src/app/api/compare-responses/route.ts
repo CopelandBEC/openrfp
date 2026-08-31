@@ -11,6 +11,25 @@ import { rateLimitResponse, reserveAICall } from "@/lib/rate-limit";
 // function is killed mid-evaluation and the response is left at 'error'.
 export const maxDuration = 300;
 
+/** Shape of the `evaluations` select below. */
+interface EvaluationRow {
+  id: string;
+  response_id: string;
+  rfp_id: string;
+  scores: Record<string, unknown> | null;
+  overall_score: number | null;
+  summary: string | null;
+  strengths: string[] | null;
+  weaknesses: string[] | null;
+  model_used: string | null;
+}
+
+/** Shape of the `responses` select below. */
+interface ResponseRow {
+  id: string;
+  vendor_name: string;
+}
+
 
 export async function POST(request: NextRequest) {
   const supabase = await createClient();
@@ -69,18 +88,18 @@ export async function POST(request: NextRequest) {
   }
 
   // Fetch vendor names for each response
-  const responseIds = evaluations.map((e: any) => e.response_id);
+  const responseIds = evaluations.map((e: EvaluationRow) => e.response_id);
   const { data: responses } = await supabase
     .from("responses")
     .select("id, vendor_name")
     .in("id", responseIds);
 
-  const vendorMap = new Map(
-    (responses || []).map((r: any) => [r.id, r.vendor_name])
+  const vendorMap = new Map<string, string>(
+    (responses || []).map((r: ResponseRow) => [r.id, r.vendor_name])
   );
 
   // Build evaluations JSON with vendor names
-  const evaluationsWithVendors = evaluations.map((e: any) => ({
+  const evaluationsWithVendors = evaluations.map((e: EvaluationRow) => ({
     ...e,
     vendor_name: vendorMap.get(e.response_id) || "Unknown",
   }));

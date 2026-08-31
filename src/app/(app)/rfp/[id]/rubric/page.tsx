@@ -85,7 +85,7 @@ export default function RubricPage({
   const supabase = useMemo(() => createClient(), []);
 
   const [rubric, setRubric] = useState<Rubric | null>(null);
-  const [loading, setLoading] = useState(isNew);
+  const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [noRubric, setNoRubric] = useState(false);
   const [hasEdits, setHasEdits] = useState(false);
@@ -95,10 +95,10 @@ export default function RubricPage({
   // Data fetching
   // -----------------------------------------------------------------------
 
+  // No synchronous setState ahead of the first await — these run from an
+  // effect on mount, where the state already starts in the right shape. The
+  // user-initiated path resets explicitly via regenerate() below.
   const fetchRubric = useCallback(async () => {
-    setLoading(true);
-    setError("");
-    setNoRubric(false);
     try {
       const { data, error: queryError } = await supabase
         .from("rubrics")
@@ -125,9 +125,6 @@ export default function RubricPage({
   }, [id, supabase]);
 
   const generateRubric = useCallback(async () => {
-    setLoading(true);
-    setError("");
-    setNoRubric(false);
     try {
       const res = await fetch("/api/generate-rubric", {
         method: "POST",
@@ -151,12 +148,23 @@ export default function RubricPage({
 
   useEffect(() => {
     if (isNew) {
+      // See the note on the sibling pages: client-side fetch, and the rule
+      // does not trace awaits.
+      // eslint-disable-next-line react-hooks/set-state-in-effect
       generateRubric();
     } else {
       fetchRubric();
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [id]);
+
+  /** User-initiated (re)generation: reset the view before kicking off the call. */
+  const regenerate = useCallback(() => {
+    setLoading(true);
+    setError("");
+    setNoRubric(false);
+    void generateRubric();
+  }, [generateRubric]);
 
   // -----------------------------------------------------------------------
   // Editing helpers
@@ -209,7 +217,6 @@ export default function RubricPage({
   const addCriterion = () => {
     setRubric((prev) => {
       if (!prev) return prev;
-      const nextIndex = prev.criteria.length;
       return {
         ...prev,
         criteria: [...prev.criteria, makeBlankCriterion()],
@@ -327,7 +334,7 @@ export default function RubricPage({
         <div className="flex flex-1 flex-col items-center justify-center px-4">
           <div className="max-w-md text-center">
             <p className="text-sm text-destructive">{error}</p>
-            <Button onClick={generateRubric} className="mt-4">
+            <Button onClick={regenerate} className="mt-4">
               Try again
             </Button>
           </div>
@@ -367,7 +374,7 @@ export default function RubricPage({
             <p className="mt-2 text-sm text-muted-foreground">
               Generate an evaluation rubric from your RFP document.
             </p>
-            <Button onClick={generateRubric} className="mt-6">
+            <Button onClick={regenerate} className="mt-6">
               Generate Rubric
             </Button>
           </div>
@@ -400,7 +407,7 @@ export default function RubricPage({
           </div>
         </header>
         <div className="flex flex-1 flex-col items-center justify-center px-4">
-          <Button onClick={generateRubric}>Generate Rubric</Button>
+          <Button onClick={regenerate}>Generate Rubric</Button>
         </div>
       </div>
     );
@@ -446,7 +453,7 @@ export default function RubricPage({
           </div>
           <Button
             variant="ghost"
-            onClick={generateRubric}
+            onClick={regenerate}
             className="shrink-0 text-muted-foreground underline-offset-4 hover:text-foreground"
           >
             Regenerate

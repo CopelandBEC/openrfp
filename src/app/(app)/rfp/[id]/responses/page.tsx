@@ -111,9 +111,10 @@ export default function ResponsesPage({
   // Data fetching
   // -----------------------------------------------------------------------
 
+  // No synchronous setState before the first await: this runs from an effect,
+  // where an eager reset just triggers a cascading render. `loading` and
+  // `error` already mount in the right state.
   const fetchResponses = useCallback(async () => {
-    setLoading(true);
-    setError("");
     try {
       const { data, error: queryError } = await supabase
         .from("responses")
@@ -130,6 +131,7 @@ export default function ResponsesPage({
       if (data) {
         setResponses(data as Response[]);
       }
+      setError("");
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to load responses");
     } finally {
@@ -138,6 +140,11 @@ export default function ResponsesPage({
   }, [id, supabase]);
 
   useEffect(() => {
+    // Client-side data fetch. The rule flags any effect that can transitively
+    // reach setState and does not trace awaits, so it cannot tell this apart
+    // from the cascading-render anti-pattern it targets. The real fix is to
+    // load this data in a server component; tracked as a follow-up.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     fetchResponses();
   }, [fetchResponses]);
 
