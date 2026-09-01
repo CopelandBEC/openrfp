@@ -2,6 +2,10 @@
 
 import { useState } from "react";
 import { createClient } from "@/lib/supabase/client";
+import {
+  useCaptcha,
+  CAPTCHA_BLOCKED_MESSAGE,
+} from "@/components/use-captcha";
 
 type State =
   | { status: "idle" }
@@ -11,6 +15,7 @@ type State =
 
 export function MagicLinkForm() {
   const [state, setState] = useState<State>({ status: "idle" });
+  const captcha = useCaptcha();
 
   async function handleSubmit(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -26,6 +31,15 @@ export function MagicLinkForm() {
 
     setState({ status: "sending" });
 
+    // Required whenever CAPTCHA protection is enabled on the Supabase project:
+    // that switch covers the OTP endpoint too, not just anonymous sign-in.
+    // Resolves immediately with a null token when Turnstile isn't configured.
+    const { ok, token } = await captcha.getToken();
+    if (!ok) {
+      setState({ status: "error", message: CAPTCHA_BLOCKED_MESSAGE });
+      return;
+    }
+
     // Request the OTP from the browser (not a server action) so Supabase's
     // PKCE code verifier is stored in THIS browser's cookies — the same
     // browser that will open the emailed link. Server-side requests leave
@@ -36,10 +50,13 @@ export function MagicLinkForm() {
       email,
       options: {
         emailRedirectTo: `${window.location.origin}/auth/callback`,
+        captchaToken: token ?? undefined,
       },
     });
 
     if (error) {
+      // The token is single-use — a retry needs a fresh one.
+      captcha.reset();
       setState({
         status: "error",
         message:
@@ -92,6 +109,8 @@ export function MagicLinkForm() {
           placeholder="you@institution.org"
         />
       </div>
+
+      {captcha.render}
 
       {state.status === "error" && (
         <p className="text-sm text-destructive" role="alert">

@@ -134,6 +134,14 @@ Two settings make this work, both under **Authentication**:
    paste in your Turnstile *secret* key. Put the matching **site** key in
    `NEXT_PUBLIC_TURNSTILE_SITE_KEY`.
 
+   **Deploy the site key before you flip this switch.** CAPTCHA protection is
+   project-wide — it covers the magic-link endpoint as much as anonymous
+   sign-in — so enabling it while the deployed build has no site key takes
+   *all* sign-in down, not just the guest path. `NEXT_PUBLIC_` values are
+   inlined at build time, so setting the variable in Vercel needs a redeploy
+   to take effect; adding it to an existing deployment's settings alone does
+   nothing.
+
 **Turnstile is not optional on a public deployment.** Guest sessions are the
 only signup path with no email step, and each one carries its own allowance of
 calls against your server-side AI key. Without a CAPTCHA, minting unlimited

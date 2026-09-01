@@ -1,11 +1,10 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useState } from "react";
 import { useRouter } from "next/navigation";
 import { Button } from "@/components/ui/button";
-import { Turnstile } from "@/components/turnstile";
 import { createClient } from "@/lib/supabase/client";
-import { TURNSTILE_SITE_KEY } from "@/lib/auth/guest";
+import { useCaptcha, CAPTCHA_BLOCKED_MESSAGE } from "@/components/use-captcha";
 
 /**
  * Polls local session storage until the new session is readable. Purely local
@@ -57,108 +56,59 @@ export function GuestStartButton({
   const router = useRouter();
   const [pending, setPending] = useState(false);
   const [error, setError] = useState("");
-  const [captchaToken, setCaptchaToken] = useState<string | null>(null);
+  const captcha = useCaptcha();
 
-  // Set when the visitor clicks before Turnstile has produced a token, so the
-  // token callback below can pick that click back up once one arrives.
-  const awaitingCaptcha = useRef(false);
-  const captchaTimeout = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const resetCaptcha = useRef<(() => void) | null>(null);
-
-  const start = useCallback(
-    async (token: string | null) => {
-      setPending(true);
-      setError("");
-
-      const supabase = createClient();
-      const {
-        data: { user },
-      } = await supabase.auth.getUser();
-
-      if (!user) {
-        const { error: signInError } = await supabase.auth.signInAnonymously(
-          token ? { options: { captchaToken: token } } : undefined
-        );
-
-        if (signInError) {
-          // Surfaced because the two likeliest causes are configuration, not
-          // user error: anonymous sign-ins left disabled in the Supabase
-          // dashboard, or a Turnstile secret key that doesn't match the site
-          // key. Both look identical from the outside.
-          console.error("Guest sign-in failed:", signInError.message);
-
-          // The token is single-use — a retry needs a fresh one.
-          resetCaptcha.current?.();
-          setCaptchaToken(null);
-          setPending(false);
-          setError(
-            signInError.status === 429
-              ? "Too many sessions started from this network. Please wait a few minutes, or sign in instead."
-              : "Couldn't start a session. Please try again, or sign in with an email link."
-          );
-          return;
-        }
-
-        // The destination is proxy-protected and reads the session from a
-        // cookie, so navigating before that cookie is readable would bounce
-        // the visitor straight back to /login. Confirm it landed first.
-        if (!(await waitForSession(supabase))) {
-          setPending(false);
-          setError(
-            "Your browser blocked the session cookie. Check that cookies are enabled for this site, then try again."
-          );
-          return;
-        }
-      }
-
-      router.push(next);
-    },
-    [next, router]
-  );
-
-  useEffect(
-    () => () => {
-      if (captchaTimeout.current) clearTimeout(captchaTimeout.current);
-    },
-    []
-  );
-
-  const handleToken = useCallback(
-    (token: string | null) => {
-      setCaptchaToken(token);
-
-      // Resume a click that arrived before Turnstile had a token for it.
-      if (token && awaitingCaptcha.current) {
-        awaitingCaptcha.current = false;
-        if (captchaTimeout.current) clearTimeout(captchaTimeout.current);
-        void start(token);
-      }
-    },
-    [start]
-  );
-
-  function handleClick() {
+  async function handleClick() {
     if (pending) return;
+    setPending(true);
+    setError("");
 
-    if (TURNSTILE_SITE_KEY && !captchaToken) {
-      awaitingCaptcha.current = true;
-      setPending(true);
+    const supabase = createClient();
+    const {
+      data: { user },
+    } = await supabase.auth.getUser();
 
-      // Turnstile is widely blocked by privacy extensions, and a blocked
-      // script never calls back — without this the button would sit on
-      // "Starting…" indefinitely with nothing to tell the visitor why.
-      captchaTimeout.current = setTimeout(() => {
-        awaitingCaptcha.current = false;
+    if (!user) {
+      const { ok, token } = await captcha.getToken();
+      if (!ok) {
+        setPending(false);
+        setError(CAPTCHA_BLOCKED_MESSAGE);
+        return;
+      }
+
+      const { error: signInError } = await supabase.auth.signInAnonymously(
+        token ? { options: { captchaToken: token } } : undefined
+      );
+
+      if (signInError) {
+        // Surfaced because the two likeliest causes are configuration, not
+        // user error: anonymous sign-ins left disabled in the Supabase
+        // dashboard, or a Turnstile secret key that doesn't match the site
+        // key. Both look identical from the outside.
+        console.error("Guest sign-in failed:", signInError.message);
+        captcha.reset();
         setPending(false);
         setError(
-          "The verification check didn't load — an ad blocker or privacy extension may be blocking it. Allow this site, or sign in with an email link instead."
+          signInError.status === 429
+            ? "Too many sessions started from this network. Please wait a few minutes, or sign in instead."
+            : "Couldn't start a session. Please try again, or sign in with an email link."
         );
-      }, 15000);
+        return;
+      }
 
-      return;
+      // The destination is proxy-protected and reads the session from a
+      // cookie, so navigating before that cookie is readable would bounce the
+      // visitor straight back to /login. Confirm it landed first.
+      if (!(await waitForSession(supabase))) {
+        setPending(false);
+        setError(
+          "Your browser blocked the session cookie. Check that cookies are enabled for this site, then try again."
+        );
+        return;
+      }
     }
 
-    void start(captchaToken);
+    router.push(next);
   }
 
   return (
@@ -173,12 +123,7 @@ export function GuestStartButton({
         {pending ? "Starting…" : children}
       </Button>
 
-      <Turnstile
-        onToken={handleToken}
-        registerReset={(reset) => {
-          resetCaptcha.current = reset;
-        }}
-      />
+      {captcha.render}
 
       {error && (
         <p className="mt-2 text-sm text-destructive" role="alert">
