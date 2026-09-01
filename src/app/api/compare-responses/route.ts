@@ -6,6 +6,7 @@ import {
   PROMPT_VERSION,
 } from "@/lib/prompts/compare-responses";
 import { rateLimitResponse, reserveAICall } from "@/lib/rate-limit";
+import { hashClientIp } from "@/lib/client-ip";
 
 // Model calls routinely run past the platform default; without this the
 // function is killed mid-evaluation and the response is left at 'error'.
@@ -104,11 +105,9 @@ export async function POST(request: NextRequest) {
     vendor_name: vendorMap.get(e.response_id) || "Unknown",
   }));
 
-  const rateLimit = await reserveAICall(
-    supabase,
-    user.id,
-    "compare_responses"
-  );
+  const rateLimit = await reserveAICall(supabase, "compare_responses", {
+    ipHash: hashClientIp(request),
+  });
   if (!rateLimit.allowed) {
     return rateLimitResponse(rateLimit);
   }

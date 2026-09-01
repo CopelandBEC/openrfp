@@ -2,6 +2,7 @@ import type { Metadata } from "next";
 import Link from "next/link";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { GuestStartButton } from "@/components/guest-start-button";
 
 export const metadata: Metadata = {
   title: "OpenRFP — Intelligent RFP evaluation, free and open source",
@@ -57,12 +58,10 @@ export default function LandingPage() {
               rubric. Upload vendor responses and receive scored evaluations
               with cited evidence — then compare all responses side by side.
             </p>
-            <div className="mt-8 flex flex-col items-center justify-center gap-3 sm:flex-row">
-              <Link href="/login">
-                <Button size="lg" className="w-full sm:w-auto">
-                  Get Started — It&apos;s Free
-                </Button>
-              </Link>
+            <div className="mt-8 flex flex-col items-center justify-center gap-3 sm:flex-row sm:items-start">
+              <GuestStartButton size="lg">
+                Start evaluating — no account needed
+              </GuestStartButton>
               <a
                 href="https://github.com/CopelandBEC/openrfp"
                 target="_blank"
@@ -73,6 +72,10 @@ export default function LandingPage() {
                 </Button>
               </a>
             </div>
+            <p className="mt-4 text-sm text-muted-foreground">
+              Run a full evaluation first. Add an email afterwards only if you
+              want to keep it.
+            </p>
           </div>
         </div>
 
@@ -100,7 +103,7 @@ export default function LandingPage() {
                   step: "3",
                   title: "Compare and decide",
                   description:
-                    "Get a side-by-side ranking with comparative analysis, close-call flags, and recommended interview questions. Override any score you disagree with. Export for your board.",
+                    "Get a side-by-side ranking with comparative analysis, close-call flags, and recommended interview questions. Override any score you disagree with, and export the ranking to CSV or JSON for your board — no account required.",
                 },
               ].map((item) => (
                 <Card key={item.step}>
@@ -156,6 +159,11 @@ export default function LandingPage() {
                   · No subscription
                 </div>
               </div>
+              <p className="mt-6 text-sm text-muted-foreground">
+                An account is only ever for keeping your work — saved history,
+                picking an evaluation back up later, and adding responses to one
+                you already ran. Everything else works as a guest.
+              </p>
             </div>
           </div>
         </div>

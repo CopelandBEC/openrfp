@@ -1,9 +1,22 @@
 import { redirect } from "next/navigation";
 import { createClient } from "@/lib/supabase/server";
+import { SignOutButton } from "@/components/sign-out-button";
+import { isGuest } from "@/lib/auth/guest";
 
-export default async function DashboardPage() {
+export default async function DashboardPage({
+  searchParams,
+}: {
+  searchParams: Promise<{ saved?: string }>;
+}) {
   // Auth is enforced by the (app) layout; RLS scopes this query to the caller.
   const supabase = await createClient();
+
+  const { saved } = await searchParams;
+
+  const {
+    data: { user },
+  } = await supabase.auth.getUser();
+  const guest = isGuest(user);
 
   const { data: rfps } = await supabase
     .from("rfps")
@@ -20,25 +33,32 @@ export default async function DashboardPage() {
               Dashboard
             </span>
           </div>
-          <form
+          <SignOutButton
+            isGuest={guest}
             action={async () => {
               "use server";
               const supabase = await createClient();
               await supabase.auth.signOut();
               redirect("/login");
             }}
-          >
-            <button
-              type="submit"
-              className="text-sm text-muted-foreground hover:text-foreground"
-            >
-              Sign out
-            </button>
-          </form>
+          />
         </div>
       </header>
 
       <main className="container mx-auto px-4 py-12">
+        {saved === "1" && !guest && (
+          <p
+            className="mb-8 rounded-md border border-primary/30 bg-primary/5 p-3 text-sm text-foreground"
+            role="status"
+          >
+            <span className="font-medium">Your work is saved.</span>{" "}
+            <span className="text-muted-foreground">
+              Everything you evaluated as a guest is now on this account — sign
+              in with the same email any time to pick it back up.
+            </span>
+          </p>
+        )}
+
         <div className="flex items-center justify-between">
           <div>
             <h1 className="text-2xl font-bold tracking-tight">

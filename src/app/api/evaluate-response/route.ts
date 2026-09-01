@@ -10,6 +10,7 @@ import {
   PROMPT_VERSION,
 } from "@/lib/prompts/evaluate-response";
 import { rateLimitResponse, reserveAICall } from "@/lib/rate-limit";
+import { hashClientIp } from "@/lib/client-ip";
 
 // Model calls routinely run past the platform default; without this the
 // function is killed mid-evaluation and the response is left at 'error'.
@@ -87,11 +88,9 @@ export async function POST(request: NextRequest) {
     );
   }
 
-  const rateLimit = await reserveAICall(
-    supabase,
-    user.id,
-    "evaluate_response"
-  );
+  const rateLimit = await reserveAICall(supabase, "evaluate_response", {
+    ipHash: hashClientIp(request),
+  });
   if (!rateLimit.allowed) {
     return rateLimitResponse(rateLimit);
   }

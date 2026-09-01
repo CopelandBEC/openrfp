@@ -86,6 +86,25 @@ export async function POST(request: NextRequest) {
     .single();
 
   if (rfpError) {
+    // The file is already in storage at this point, so drop it rather than
+    // leave an object no row will ever reference.
+    await supabase.storage.from("rfp-files").remove([fileName]);
+
+    // A guest who has hit their RFP cap trips the row-level security check on
+    // insert. That is a limit, not a fault, and "Failed to create RFP" would
+    // send them off looking for a broken upload.
+    if (rfpError.code === "42501") {
+      return NextResponse.json(
+        {
+          error:
+            "Guest sessions are limited to a few RFPs. Save your work to an " +
+            "account from the banner above to keep going.",
+        },
+        { status: 403 }
+      );
+    }
+
+    console.error("Failed to create RFP:", rfpError.message);
     return NextResponse.json(
       { error: "Failed to create RFP" },
       { status: 500 }

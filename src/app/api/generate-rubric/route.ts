@@ -10,6 +10,7 @@ import {
   PROMPT_VERSION,
 } from "@/lib/prompts/generate-rubric";
 import { rateLimitResponse, reserveAICall } from "@/lib/rate-limit";
+import { hashClientIp } from "@/lib/client-ip";
 
 // Model calls routinely run past the platform default; without this the
 // function is killed mid-evaluation and the response is left at 'error'.
@@ -53,7 +54,9 @@ export async function POST(request: NextRequest) {
     );
   }
 
-  const rateLimit = await reserveAICall(supabase, user.id, "generate_rubric");
+  const rateLimit = await reserveAICall(supabase, "generate_rubric", {
+    ipHash: hashClientIp(request),
+  });
   if (!rateLimit.allowed) {
     return rateLimitResponse(rateLimit);
   }

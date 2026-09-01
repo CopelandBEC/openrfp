@@ -34,7 +34,7 @@ A free, open-source web app that helps institutional facilities management perso
 | **Database** | Supabase (PostgreSQL) | Free tier (500MB), built-in auth, row-level security, file storage |
 | **File Storage** | Supabase Storage | Stores uploaded RFPs and response PDFs (1GB free tier) |
 | **Hosting** | Vercel | One-click Next.js deploys, free tier (100GB bandwidth) |
-| **Auth** | Supabase Auth | Email/password + magic links. SSO-ready for future. |
+| **Auth** | Supabase Auth | Guest (anonymous) sessions by default; magic link to save. SSO-ready for future. |
 | **AI Provider** | Fireworks AI | Cost-efficient open models, OpenAI-compatible API, BYOK already configured |
 | **PDF Processing** | pdf-parse (server-side text extraction) | Lightweight Node.js library, extracts text from OCR'd PDFs |
 | **State Management** | React Server Components + Supabase client | No Redux/Zustand needed at this scale |
@@ -342,8 +342,34 @@ create table audit_log (
   - "How it works" section with the evaluation process explained in plain language
   - GitHub repo link (source code, prompts, scoring logic — all visible)
   - Privacy note: "Your documents are processed securely and are not used to train AI models. Fireworks AI's inference uses zero data retention by default."
-  - CTA: "Get Started" → auth flow
+  - CTA: "Start evaluating — no account needed" → guest session, straight into Screen 1
 - **Design:** Clean, minimal, institutional-appropriate. Not flashy. Conveys trust.
+
+### Auth model
+
+Authentication is deliberately not a gate on the first pass. A visitor lands,
+clicks through, and runs a complete evaluation — RFP, rubric, responses,
+comparison — as a **guest**, holding a Supabase anonymous session. That session
+is a real `auth.users` row with a real JWT, so every RLS policy applies to a
+guest exactly as it does to a member; the difference is that nothing links the
+session to a person, so it cannot be recovered once the browser forgets it.
+
+Saving is the only thing an account buys. `updateUser({ email })` attaches an
+email to the anonymous user already signed in, converting the same user id in
+place — no data is copied or migrated, and the work the visitor just did is
+simply theirs from then on.
+
+**What requires an account:** persistence only — saved history, returning to an
+evaluation later, adding responses to one already run. Results and CSV/JSON
+export stay available to guests. Gating the export would put the paywall at the
+exact moment the tool delivers its value, after the visitor has already spent
+real time uploading proposals; the honest trade is that keeping the work is
+worth an email and seeing it is not.
+
+**What this costs:** guest sessions are a signup path with no email step, and
+the AI key is held server-side, so the limits described in the README
+(`public.ai_limits`, Turnstile on session creation) are what keep an open door
+from being an open budget.
 
 ### Screen 1: RFP Upload + Rubric Generation
 

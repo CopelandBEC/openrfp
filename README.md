@@ -69,13 +69,124 @@ that signs up can spend your provider budget.
 `schema.sql` is idempotent — re-run the whole file to pick up schema or policy
 changes without recreating the project.
 
-**Configure custom SMTP before inviting anyone.** Supabase's built-in email
-service is capped at 2 messages per hour per project, shared across magic links,
-signups and password resets, and is documented as test-only. Sign-in appears
-broken under that cap. Add an SMTP provider under **Authentication → SMTP
-Settings**, then raise **Authentication → Rate Limits**. Also add every origin
-you deploy to (including preview URLs) to **Authentication → URL Configuration →
-Redirect URLs**, or the emailed link will refuse to complete sign-in.
+**Add every origin you deploy to** (including preview URLs) under
+**Authentication → URL Configuration → Redirect URLs**, or the emailed link will
+refuse to complete sign-in.
+
+### Email setup (Resend)
+
+Email is only needed when someone saves their work — a guest can run a whole
+evaluation without it — but sign-in is broken without it, so configure it before
+inviting anyone.
+
+Supabase's built-in email service is capped at **2 messages per hour per
+project**, shared across every kind of auth email, and is documented as
+test-only. Under that cap sign-in simply appears broken. Resend's free tier
+(3,000/month, 100/day) is enough for this and takes a few minutes:
+
+1. Create an account at [resend.com](https://resend.com).
+2. **Domains → Add Domain**, enter a domain you control, and add the DNS records
+   it shows you (SPF and DKIM as `TXT`, plus the `MX` record for bounces). Wait
+   for the domain to read **Verified**.
+   *Skipping this is the usual mistake:* until a domain is verified Resend only
+   delivers to the address that owns the account, so invites appear to send and
+   silently never arrive.
+3. **API Keys → Create API Key**, with Sending access. Copy the `re_…` value —
+   it is shown once.
+4. In Supabase, go to **Authentication → Emails → SMTP Settings**, enable
+   **Custom SMTP**, and enter:
+
+   | Field | Value |
+   | --- | --- |
+   | Host | `smtp.resend.com` |
+   | Port | `465` |
+   | Username | `resend` |
+   | Password | your `re_…` API key |
+   | Sender email | an address at your verified domain, e.g. `no-reply@yourdomain.com` |
+   | Sender name | `OpenRFP` |
+
+5. Raise **Authentication → Rate Limits → Rate limit for sending emails** from
+   the default `2` per hour to something realistic (30 is a reasonable start).
+   *Changing the SMTP settings does not raise this on its own* — it stays at 2
+   until you change it, which looks exactly like the SMTP setup having failed.
+6. Send yourself a magic link to confirm delivery end to end.
+
+Supabase also publishes a Resend integration that fills in the SMTP fields for
+you; the manual route above is the same configuration, and worth knowing when
+something needs debugging.
+
+### Guest sessions
+
+A visitor can upload an RFP, generate a rubric, upload responses and read the
+full comparison without an account. Only *keeping* that work needs an email.
+
+This uses Supabase anonymous sign-in: a guest gets a real row in `auth.users`
+and a real JWT, so every row-level security policy applies to them unchanged.
+When they later choose **Save to an account**, `updateUser({ email })` attaches
+an email to that same user id — nothing is copied or migrated, and the account
+simply stops being anonymous.
+
+Two settings make this work, both under **Authentication**:
+
+1. **Sign In / Providers → Allow anonymous sign-ins: on.** Without it the guest
+   button fails and visitors are pushed back to the magic-link form.
+2. **Attack Protection → enable CAPTCHA, provider Cloudflare Turnstile**, and
+   paste in your Turnstile *secret* key. Put the matching **site** key in
+   `NEXT_PUBLIC_TURNSTILE_SITE_KEY`.
+
+**Turnstile is not optional on a public deployment.** Guest sessions are the
+only signup path with no email step, and each one carries its own allowance of
+calls against your server-side AI key. Without a CAPTCHA, minting unlimited
+sessions is a page reload. Supabase verifies the token at its own auth endpoint,
+so the check holds even against a caller who bypasses this app's UI entirely.
+Leave the variable unset in local development, where it is only friction.
+
+#### Guest limits
+
+Limits live in the `public.ai_limits` table rather than in environment
+variables, because `reserve_ai_call` is reachable over PostgREST by any
+signed-in caller — a limit sent from the app can only ever *tighten* the one
+stored server-side, never raise it. Defaults:
+
+| Column | Default | Applies to |
+| --- | --- | --- |
+| `member_hourly_limit` | 20 | AI calls/hour for a signed-in account |
+| `guest_hourly_limit` | 6 | AI calls/hour for one guest session |
+| `guest_ip_hourly_limit` | 12 | AI calls/hour for all guests behind one IP |
+| `guest_rfp_limit` | 3 | RFPs one guest session may create |
+
+Change one with an `UPDATE` from the SQL Editor:
+
+```sql
+update public.ai_limits set guest_hourly_limit = 4;
+```
+
+`AI_RATE_LIMIT_PER_HOUR` still works and is applied on top, but only ever as
+the stricter of the two.
+
+The per-IP ceiling is defence in depth rather than a hard boundary: it needs
+`IP_HASH_SECRET` set to be active at all, it exempts signed-in members so a
+shared office NAT can't lock an organization out of its own account, and since
+this repository is public, someone reading this file could call the reservation
+function directly with a fabricated hash. The guarantees that do hold under
+that are the CAPTCHA on session creation, the per-session cap, and the guest
+RFP cap — the first and last are enforced by Supabase and by RLS, where a
+forged argument cannot reach them.
+
+#### Cleaning up abandoned guests
+
+Guest rows are permanent and count toward your project's monthly active users,
+so sweep them periodically. `public.delete_stale_guests()` removes anonymous
+users older than 30 days along with their uploaded files, and never touches a
+guest who saved their work (attaching an email clears the anonymous flag).
+Schedule it under **Database → Cron**:
+
+```sql
+select cron.schedule(
+  'openrfp-delete-stale-guests', '0 3 * * *',
+  $$ select public.delete_stale_guests(); $$
+);
+```
 
 ### Development
 

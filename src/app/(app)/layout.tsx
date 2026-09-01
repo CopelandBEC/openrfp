@@ -1,5 +1,7 @@
 import { redirect } from "next/navigation";
 import { createClient } from "@/lib/supabase/server";
+import { GuestBanner } from "@/components/guest-banner";
+import { isGuest } from "@/lib/auth/guest";
 
 /**
  * Auth gate for every authenticated screen.
@@ -10,6 +12,11 @@ import { createClient } from "@/lib/supabase/server";
  * auth server before any child renders. It also forces these routes to be
  * server-rendered on demand — /rfp/new was previously prerendered as a static,
  * publicly reachable page.
+ *
+ * "Signed in" here includes guests. A guest holds a genuine Supabase session,
+ * so every RLS policy applies to them exactly as it does to a member; what
+ * they lack is an email, and with it any way back to this work later. Hence
+ * the banner.
  */
 export default async function AppLayout({
   children,
@@ -25,5 +32,10 @@ export default async function AppLayout({
     redirect("/login");
   }
 
-  return <>{children}</>;
+  return (
+    <>
+      {isGuest(user) && <GuestBanner />}
+      {children}
+    </>
+  );
 }

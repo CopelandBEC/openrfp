@@ -357,3 +357,283 @@ create policy "users delete own files" on storage.objects
     bucket_id = 'rfp-files'
     and (storage.foldername(name))[1] = (select auth.uid()::text)
   );
+
+-- ============================================
+-- Guest (anonymous) sessions
+-- ============================================
+-- A visitor can run a full evaluation pass before creating an account. Supabase
+-- anonymous sign-in gives them a real `auth.users` row and a real JWT, so every
+-- policy above — which keys on auth.uid() — applies to them unchanged, and no
+-- data has to be migrated when they later attach an email: `updateUser({ email })`
+-- converts the SAME user id from anonymous to permanent, and their RFPs,
+-- responses and evaluations simply stay theirs.
+--
+-- The cost of that convenience is that anyone can mint a session, so the limits
+-- below are what stand between an open signup path and the project's AI budget.
+
+-- Server-enforced limits. Deliberately a table rather than function constants:
+-- the values must live somewhere the browser cannot reach or override. RLS is
+-- enabled with NO policies, so PostgREST exposes nothing — only the SECURITY
+-- DEFINER functions below (which bypass RLS) can read it. Change a limit with
+-- an UPDATE from the SQL editor.
+create table if not exists public.ai_limits (
+  id boolean primary key default true check (id),
+  member_hourly_limit integer not null default 20,
+  guest_hourly_limit integer not null default 6,
+  guest_ip_hourly_limit integer not null default 12,
+  guest_rfp_limit integer not null default 3
+);
+insert into public.ai_limits (id) values (true) on conflict (id) do nothing;
+alter table public.ai_limits enable row level security;
+
+-- Which caller are we looking at? Anonymous sign-in stamps `is_anonymous` into
+-- the JWT; a converted (email-attached) user carries false.
+create or replace function public.is_guest()
+returns boolean
+language sql
+stable
+as $$
+  select coalesce((auth.jwt() ->> 'is_anonymous')::boolean, false);
+$$;
+
+-- Records the IP a call came from so the per-IP guest ceiling below has
+-- something to count. Hashed application-side with a server-held secret — the
+-- raw address is never stored.
+alter table public.ai_usage
+  add column if not exists ip_hash text;
+
+create index if not exists ai_usage_ip_created_idx
+  on public.ai_usage (ip_hash, created_at desc)
+  where ip_hash is not null;
+
+-- ============================================
+-- AI call reservation
+-- ============================================
+-- Replaces the previous read-then-insert in src/lib/rate-limit.ts, which could
+-- let a concurrent burst each observe the same under-limit count and all
+-- proceed. Taking the count and the insert inside one transaction, behind an
+-- advisory lock, closes that window.
+--
+-- The effective limit is min(caller's limit, the table above). The caller may
+-- only make the cap STRICTER: this function is reachable over PostgREST by any
+-- authenticated user, so a limit passed in from outside can never be trusted to
+-- raise the ceiling.
+create or replace function public.reserve_ai_call(
+  p_action text,
+  p_ip_hash text default null,
+  p_client_limit integer default null
+)
+returns jsonb
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  v_user uuid := auth.uid();
+  v_guest boolean := public.is_guest();
+  v_window_start timestamptz := now() - interval '1 hour';
+  v_limits public.ai_limits%rowtype;
+  v_limit integer;
+  v_ip_limit integer;
+  v_used integer;
+  v_ip_used integer;
+  v_oldest timestamptz;
+  v_ip_oldest timestamptz;
+begin
+  if v_user is null then
+    raise exception 'reserve_ai_call: no authenticated user';
+  end if;
+
+  if p_action not in ('generate_rubric', 'evaluate_response', 'compare_responses') then
+    raise exception 'reserve_ai_call: unknown action %', p_action;
+  end if;
+
+  select * into v_limits from public.ai_limits where id;
+
+  v_limit := case when v_guest
+    then v_limits.guest_hourly_limit
+    else v_limits.member_hourly_limit
+  end;
+
+  -- A caller-supplied limit may only tighten, never loosen. 0 means "no cap"
+  -- on the app side, so it is ignored here rather than treated as a floor.
+  if p_client_limit is not null and p_client_limit > 0 then
+    v_limit := least(v_limit, p_client_limit);
+  end if;
+
+  -- Serialize this caller's reservations. Locks are always taken user-first,
+  -- then IP, so two callers sharing an IP cannot deadlock against each other.
+  perform pg_advisory_xact_lock(hashtextextended('openrfp:ai_usage:user:' || v_user::text, 0));
+
+  select count(*), min(created_at) into v_used, v_oldest
+    from public.ai_usage
+   where user_id = v_user
+     and created_at >= v_window_start;
+
+  if v_used >= v_limit then
+    return jsonb_build_object(
+      'allowed', false,
+      'scope', 'user',
+      'limit', v_limit,
+      'used', v_used,
+      'retry_after_seconds',
+        greatest(1, ceil(extract(epoch from (v_oldest + interval '1 hour' - now())))::integer)
+    );
+  end if;
+
+  -- Guests only: a per-IP ceiling across every guest session from one address.
+  -- The per-user cap alone is no guard when minting another user is a page
+  -- reload away. Signed-in members are exempt so a shared office NAT or campus
+  -- gateway can't lock a whole organization out of its own account.
+  if v_guest and p_ip_hash is not null then
+    v_ip_limit := v_limits.guest_ip_hourly_limit;
+
+    perform pg_advisory_xact_lock(hashtextextended('openrfp:ai_usage:ip:' || p_ip_hash, 0));
+
+    -- Counted into their own variables: v_used still has to describe THIS
+    -- caller when the success payload is built below, and the app puts that
+    -- number in front of them.
+    select count(*), min(created_at) into v_ip_used, v_ip_oldest
+      from public.ai_usage
+     where ip_hash = p_ip_hash
+       and created_at >= v_window_start;
+
+    if v_ip_used >= v_ip_limit then
+      return jsonb_build_object(
+        'allowed', false,
+        'scope', 'ip',
+        'limit', v_ip_limit,
+        'used', v_ip_used,
+        'retry_after_seconds',
+          greatest(1, ceil(extract(epoch from (v_ip_oldest + interval '1 hour' - now())))::integer)
+      );
+    end if;
+  end if;
+
+  insert into public.ai_usage (user_id, action, ip_hash)
+  values (v_user, p_action, p_ip_hash);
+
+  return jsonb_build_object(
+    'allowed', true,
+    'scope', case when v_guest then 'guest' else 'member' end,
+    'limit', v_limit,
+    'used', v_used + 1,
+    'retry_after_seconds', 0
+  );
+end;
+$$;
+
+revoke all on function public.reserve_ai_call(text, text, integer) from public;
+grant execute on function public.reserve_ai_call(text, text, integer) to authenticated;
+
+-- ============================================
+-- Guest RFP cap
+-- ============================================
+-- Bounds how much storage one throwaway session can consume. SECURITY DEFINER
+-- because a policy on public.rfps cannot itself SELECT public.rfps — the policy
+-- would recurse into evaluating itself.
+create or replace function public.can_create_rfp()
+returns boolean
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  v_limit integer;
+  v_used integer;
+begin
+  if not public.is_guest() then
+    return true;
+  end if;
+
+  select guest_rfp_limit into v_limit from public.ai_limits where id;
+  select count(*) into v_used from public.rfps where owner_id = auth.uid();
+
+  return v_used < v_limit;
+end;
+$$;
+
+revoke all on function public.can_create_rfp() from public;
+grant execute on function public.can_create_rfp() to authenticated;
+
+-- Supersedes the policy of the same name defined earlier in this file.
+drop policy if exists "rfps_insert_own" on public.rfps;
+create policy "rfps_insert_own" on public.rfps
+  for insert with check (auth.uid() = owner_id and public.can_create_rfp());
+
+-- ============================================
+-- Keep profiles.email in step with auth.users
+-- ============================================
+-- handle_new_user() copies the email at signup, but a guest has none at that
+-- point — it arrives later, when they attach one to save their work. Without
+-- this the profile row would keep a null email forever.
+create or replace function public.sync_profile_email()
+returns trigger
+language plpgsql
+security definer set search_path = public
+as $$
+begin
+  update public.profiles set email = new.email where id = new.id;
+  return new;
+end;
+$$;
+
+drop trigger if exists on_auth_user_email_changed on auth.users;
+create trigger on_auth_user_email_changed
+  after update of email on auth.users
+  for each row
+  when (new.email is distinct from old.email)
+  execute function public.sync_profile_email();
+
+-- ============================================
+-- Guest cleanup
+-- ============================================
+-- Abandoned guest sessions are permanent rows in auth.users and count toward
+-- the project's monthly active users, so they need sweeping. Deleting the user
+-- cascades to their RFPs, responses and evaluations; storage objects are not
+-- covered by that cascade and are removed explicitly first.
+--
+-- Never touches a guest who attached an email — conversion clears is_anonymous,
+-- so a saved account falls out of this query the moment it is saved.
+--
+-- Run it on a schedule (Dashboard → Database → Cron), e.g. daily at 03:00 UTC:
+--   select cron.schedule(
+--     'openrfp-delete-stale-guests', '0 3 * * *',
+--     $cron$ select public.delete_stale_guests(); $cron$
+--   );
+create or replace function public.delete_stale_guests(
+  p_older_than interval default interval '30 days'
+)
+returns integer
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  v_ids uuid[];
+  v_folders text[];
+  v_count integer;
+begin
+  select array_agg(id) into v_ids
+    from auth.users
+   where is_anonymous = true
+     and created_at < now() - p_older_than;
+
+  if v_ids is null then
+    return 0;
+  end if;
+
+  select array_agg(id::text) into v_folders from unnest(v_ids) as id;
+
+  delete from storage.objects
+   where bucket_id = 'rfp-files'
+     and (storage.foldername(name))[1] = any(v_folders);
+
+  delete from auth.users where id = any(v_ids);
+  get diagnostics v_count = row_count;
+
+  return v_count;
+end;
+$$;
+
+revoke all on function public.delete_stale_guests(interval) from public;
