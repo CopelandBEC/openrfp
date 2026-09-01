@@ -162,6 +162,7 @@ stored server-side, never raise it. Defaults:
 | `guest_hourly_limit` | 6 | AI calls/hour for one guest session |
 | `guest_ip_hourly_limit` | 12 | AI calls/hour for all guests behind one IP |
 | `guest_rfp_limit` | 3 | RFPs one guest session may create |
+| `guest_file_limit` | 12 | Uploaded files, and response rows, per guest |
 
 Change one with an `UPDATE` from the SQL Editor:
 
@@ -171,6 +172,12 @@ update public.ai_limits set guest_hourly_limit = 4;
 
 `AI_RATE_LIMIT_PER_HOUR` still works and is applied on top, but only ever as
 the stricter of the two.
+
+A guest holds an ordinary JWT, so they can upload straight to the Storage API
+without going through this app. `guest_file_limit` is therefore enforced by the
+storage policy itself, and the `rfp-files` bucket carries a 25 MB size limit and
+a PDF-only MIME allowlist — the upload routes check both, but only for uploads
+that come through the app.
 
 The per-IP ceiling is defence in depth rather than a hard boundary: it needs
 `IP_HASH_SECRET` set to be active at all, it exempts signed-in members so a
@@ -184,16 +191,43 @@ forged argument cannot reach them.
 #### Cleaning up abandoned guests
 
 Guest rows are permanent and count toward your project's monthly active users,
-so sweep them periodically. `public.delete_stale_guests()` removes anonymous
-users older than 30 days along with their uploaded files, and never touches a
-guest who saved their work (attaching an email clears the anonymous flag).
-Schedule it under **Database → Cron**:
+so sweep them periodically. Run:
+
+```bash
+SUPABASE_URL=https://xxxx.supabase.co \
+SUPABASE_SERVICE_ROLE_KEY=eyJ... \
+node scripts/purge-stale-guests.mjs --older-than "30 days"
+```
+
+Add `--dry-run` to see what would go without deleting anything.
+
+This is a script rather than a cron job in SQL because deleting a row from
+`storage.objects` removes only Storage's metadata — the object itself stays in
+the bucket, and with the row gone nothing is left to find it by. Files have to
+be removed through the Storage API, so the script does that first and then asks
+the database to delete the accounts. As a backstop, `delete_stale_guests()`
+skips any guest that still owns objects, so an interrupted run leaves work to
+finish rather than bytes stranded.
+
+The service role key bypasses row-level security. It belongs in the environment
+of this job only — never in `.env.local`, and never behind a `NEXT_PUBLIC_`
+prefix, which would ship it to the browser.
+
+Staleness is measured from **last activity**, not signup: an anonymous session
+stays valid as long as its refresh token is used, so a guest who started five
+weeks ago may have uploaded something minutes ago. Activity is read from this
+project's own tables (`rfps`, `responses`, `ai_usage`), which misses a guest who
+only ever reads — acceptable on a 30-day window, and the reason unsaved guest
+work is documented as impermanent. A guest who saved is never in scope, since
+attaching an email clears the anonymous flag.
+
+To run it on a schedule, point any scheduler you already have (GitHub Actions,
+a Vercel cron hitting a small admin route, your own machine) at that command.
+Inspect what a sweep would touch from the SQL Editor at any time:
 
 ```sql
-select cron.schedule(
-  'openrfp-delete-stale-guests', '0 3 * * *',
-  $$ select public.delete_stale_guests(); $$
-);
+select * from public.stale_guest_ids('30 days');
+select * from public.stale_guest_files('30 days');
 ```
 
 ### Development

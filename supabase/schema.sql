@@ -381,9 +381,12 @@ create table if not exists public.ai_limits (
   member_hourly_limit integer not null default 20,
   guest_hourly_limit integer not null default 6,
   guest_ip_hourly_limit integer not null default 12,
-  guest_rfp_limit integer not null default 3
+  guest_rfp_limit integer not null default 3,
+  guest_file_limit integer not null default 12
 );
 insert into public.ai_limits (id) values (true) on conflict (id) do nothing;
+alter table public.ai_limits add column if not exists
+  guest_file_limit integer not null default 12;
 alter table public.ai_limits enable row level security;
 
 -- Which caller are we looking at? Anonymous sign-in stamps `is_anonymous` into
@@ -396,15 +399,44 @@ as $$
   select coalesce((auth.jwt() ->> 'is_anonymous')::boolean, false);
 $$;
 
+-- Reservations are written exclusively by reserve_ai_call below, never by the
+-- client. With a direct INSERT policy in place, a caller could seed their own
+-- ai_usage with a far-future created_at: the row still falls inside the rolling
+-- window, so it counts toward the cap, and the retry calculation derived from
+-- it overflowed `integer` and raised. Every later reservation for that account
+-- then failed, and a failed reservation used to be treated as permission to
+-- proceed — turning a self-inflicted poisoning into an uncapped AI budget.
+--
+-- Three things close that off: no client writes (here), a retry value that
+-- cannot overflow (retry_after_seconds below), and a reservation failure that
+-- denies rather than allows (src/lib/rate-limit.ts).
+drop policy if exists "ai_usage_insert_own" on public.ai_usage;
+revoke insert, update, delete on public.ai_usage from authenticated, anon;
+
 -- Records the IP a call came from so the per-IP guest ceiling below has
 -- something to count. Hashed application-side with a server-held secret — the
--- raw address is never stored.
+-- raw address is never stored, and only guest calls record one at all.
 alter table public.ai_usage
   add column if not exists ip_hash text;
 
 create index if not exists ai_usage_ip_created_idx
   on public.ai_usage (ip_hash, created_at desc)
   where ip_hash is not null;
+
+-- Seconds until the oldest call in the window ages out, clamped to the window
+-- itself. The clamp happens in numeric space, before the cast: an unclamped
+-- `ceil(...)::integer` overflows on any far-future timestamp, and an exception
+-- here is worth strictly less than a slightly wrong retry hint.
+create or replace function public.retry_after_seconds(p_oldest timestamptz)
+returns integer
+language sql
+stable
+as $$
+  select least(
+    3600::numeric,
+    greatest(1::numeric, ceil(extract(epoch from (p_oldest + interval '1 hour' - now()))))
+  )::integer;
+$$;
 
 -- ============================================
 -- AI call reservation
@@ -476,8 +508,7 @@ begin
       'scope', 'user',
       'limit', v_limit,
       'used', v_used,
-      'retry_after_seconds',
-        greatest(1, ceil(extract(epoch from (v_oldest + interval '1 hour' - now())))::integer)
+      'retry_after_seconds', public.retry_after_seconds(v_oldest)
     );
   end if;
 
@@ -504,14 +535,18 @@ begin
         'scope', 'ip',
         'limit', v_ip_limit,
         'used', v_ip_used,
-        'retry_after_seconds',
-          greatest(1, ceil(extract(epoch from (v_ip_oldest + interval '1 hour' - now())))::integer)
+        'retry_after_seconds', public.retry_after_seconds(v_ip_oldest)
       );
     end if;
   end if;
 
+  -- Members are exempt from the IP ceiling, so recording their address would
+  -- only let their own calls exhaust it for everyone else: two members working
+  -- from one office used to lock out every guest on that network, including one
+  -- who had made no calls at all. Storing nothing for them is also less data
+  -- retained about signed-in users than the guard needs.
   insert into public.ai_usage (user_id, action, ip_hash)
-  values (v_user, p_action, p_ip_hash);
+  values (v_user, p_action, case when v_guest then p_ip_hash end);
 
   return jsonb_build_object(
     'allowed', true,
@@ -562,6 +597,107 @@ create policy "rfps_insert_own" on public.rfps
   for insert with check (auth.uid() = owner_id and public.can_create_rfp());
 
 -- ============================================
+-- Guest storage and response caps
+-- ============================================
+-- Capping rows in public.rfps does not cap what a guest can store. The storage
+-- policies accept any object under the caller's own UUID prefix, and a guest
+-- holds an ordinary JWT — so they can PUT straight at the Storage API without
+-- going through this app at all, and can delete their rfps rows and repeat
+-- while the objects stay behind. The bound has to sit on the objects.
+
+create or replace function public.can_upload_file()
+returns boolean
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  v_limit integer;
+  v_used integer;
+begin
+  if not public.is_guest() then
+    return true;
+  end if;
+
+  select guest_file_limit into v_limit from public.ai_limits where id;
+
+  select count(*) into v_used
+    from storage.objects
+   where bucket_id = 'rfp-files'
+     and (storage.foldername(name))[1] = (select auth.uid()::text);
+
+  return v_used < v_limit;
+end;
+$$;
+
+revoke all on function public.can_upload_file() from public;
+grant execute on function public.can_upload_file() to authenticated;
+
+-- Responses carry no per-RFP limit of their own, so a guest holding three RFPs
+-- could otherwise insert rows against them without end. Cheap to bound, and it
+-- keeps the row count in step with the file count.
+create or replace function public.can_create_response()
+returns boolean
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  v_limit integer;
+  v_used integer;
+begin
+  if not public.is_guest() then
+    return true;
+  end if;
+
+  select guest_file_limit into v_limit from public.ai_limits where id;
+
+  select count(*) into v_used
+    from public.responses r
+    join public.rfps f on f.id = r.rfp_id
+   where f.owner_id = (select auth.uid());
+
+  return v_used < v_limit;
+end;
+$$;
+
+revoke all on function public.can_create_response() from public;
+grant execute on function public.can_create_response() to authenticated;
+
+-- Supabase ships storage.objects with row-level security enabled, and every
+-- storage policy in this file is inert without it. Asserted rather than assumed
+-- because the failure is silent: the policies still create, still look right in
+-- the dashboard, and enforce nothing.
+alter table storage.objects enable row level security;
+
+-- Both supersede the policies of the same name defined earlier in this file.
+drop policy if exists "users upload own files" on storage.objects;
+create policy "users upload own files" on storage.objects
+  for insert with check (
+    bucket_id = 'rfp-files'
+    and (storage.foldername(name))[1] = (select auth.uid()::text)
+    and public.can_upload_file()
+  );
+
+drop policy if exists "responses_insert_own" on public.responses;
+create policy "responses_insert_own" on public.responses
+  for insert with check (
+    exists (
+      select 1 from public.rfps
+       where rfps.id = responses.rfp_id and rfps.owner_id = auth.uid()
+    )
+    and public.can_create_response()
+  );
+
+-- Size and type ceilings enforced by Storage itself, which is the only layer a
+-- direct PUT cannot route around. src/app/api/upload-rfp checks both, but that
+-- check only runs for uploads that come through the app.
+update storage.buckets
+   set file_size_limit = 26214400,          -- 25 MB, matching the upload routes
+       allowed_mime_types = array['application/pdf']
+ where id = 'rfp-files';
+
+-- ============================================
 -- Keep profiles.email in step with auth.users
 -- ============================================
 -- handle_new_user() copies the email at signup, but a guest has none at that
@@ -589,18 +725,69 @@ create trigger on_auth_user_email_changed
 -- Guest cleanup
 -- ============================================
 -- Abandoned guest sessions are permanent rows in auth.users and count toward
--- the project's monthly active users, so they need sweeping. Deleting the user
--- cascades to their RFPs, responses and evaluations; storage objects are not
--- covered by that cascade and are removed explicitly first.
+-- the project's monthly active users, so they need sweeping. A saved account is
+-- never in scope: attaching an email clears is_anonymous, so it drops out of
+-- these queries the moment it is saved.
+
+-- Staleness is measured from last activity, not from signup. An anonymous
+-- session stays valid as long as its refresh token is used, so a guest who
+-- started five weeks ago may have uploaded something minutes ago — deleting on
+-- created_at alone would take live work out from under them mid-session.
 --
--- Never touches a guest who attached an email — conversion clears is_anonymous,
--- so a saved account falls out of this query the moment it is saved.
+-- Activity is read from this project's own tables rather than from auth
+-- internals. That misses a guest who only ever reads, which is the acceptable
+-- edge: the sweep runs on a 30-day window, and unsaved guest work is documented
+-- as impermanent precisely because nothing links it to a person.
+create or replace function public.stale_guest_ids(
+  p_older_than interval default interval '30 days'
+)
+returns setof uuid
+language sql
+security definer
+set search_path = public
+as $$
+  select u.id
+    from auth.users u
+   where u.is_anonymous
+     and greatest(
+           u.created_at,
+           coalesce((select max(greatest(r.created_at, r.updated_at))
+                       from public.rfps r where r.owner_id = u.id), u.created_at),
+           coalesce((select max(resp.created_at)
+                       from public.responses resp
+                       join public.rfps r2 on r2.id = resp.rfp_id
+                      where r2.owner_id = u.id), u.created_at),
+           coalesce((select max(a.created_at)
+                       from public.ai_usage a where a.user_id = u.id), u.created_at)
+         ) < now() - p_older_than;
+$$;
+
+-- Objects still held by stale guests, for the purge script to remove through
+-- the Storage API. Deleting rows from storage.objects in SQL drops only the
+-- metadata — the payload stays in the bucket, and without the row nothing is
+-- left to find it by. So this lists; it does not delete.
+create or replace function public.stale_guest_files(
+  p_older_than interval default interval '30 days'
+)
+returns table (object_name text)
+language sql
+security definer
+set search_path = public
+as $$
+  select o.name
+    from storage.objects o
+    join public.stale_guest_ids(p_older_than) g
+      on (storage.foldername(o.name))[1] = g::text
+   where o.bucket_id = 'rfp-files';
+$$;
+
+-- Deletes stale guests and, by cascade, their RFPs, responses and evaluations.
 --
--- Run it on a schedule (Dashboard → Database → Cron), e.g. daily at 03:00 UTC:
---   select cron.schedule(
---     'openrfp-delete-stale-guests', '0 3 * * *',
---     $cron$ select public.delete_stale_guests(); $cron$
---   );
+-- Deliberately skips any guest who still has objects in the bucket: deleting
+-- the user would strand those bytes with no owner and no way to bill or reclaim
+-- them. Run scripts/purge-stale-guests.mjs, which removes the files through the
+-- Storage API first and then calls this — or run this on its own, where it will
+-- safely clear only the guests who never uploaded anything.
 create or replace function public.delete_stale_guests(
   p_older_than interval default interval '30 days'
 )
@@ -610,30 +797,25 @@ security definer
 set search_path = public
 as $$
 declare
-  v_ids uuid[];
-  v_folders text[];
   v_count integer;
 begin
-  select array_agg(id) into v_ids
-    from auth.users
-   where is_anonymous = true
-     and created_at < now() - p_older_than;
+  with deletable as (
+    select g as id
+      from public.stale_guest_ids(p_older_than) g
+     where not exists (
+       select 1 from storage.objects o
+        where o.bucket_id = 'rfp-files'
+          and (storage.foldername(o.name))[1] = g::text
+     )
+  )
+  delete from auth.users
+   where id in (select id from deletable);
 
-  if v_ids is null then
-    return 0;
-  end if;
-
-  select array_agg(id::text) into v_folders from unnest(v_ids) as id;
-
-  delete from storage.objects
-   where bucket_id = 'rfp-files'
-     and (storage.foldername(name))[1] = any(v_folders);
-
-  delete from auth.users where id = any(v_ids);
   get diagnostics v_count = row_count;
-
   return v_count;
 end;
 $$;
 
+revoke all on function public.stale_guest_ids(interval) from public;
+revoke all on function public.stale_guest_files(interval) from public;
 revoke all on function public.delete_stale_guests(interval) from public;

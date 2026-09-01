@@ -26,8 +26,11 @@ export function getHourlyLimit(): number {
 
 export interface RateLimitResult {
   allowed: boolean;
-  /** Which ceiling was hit: the caller's own, or the per-IP guest ceiling. */
-  scope: "user" | "ip" | "guest" | "member";
+  /**
+   * Which ceiling was hit: the caller's own, or the per-IP guest ceiling.
+   * "error" means the reservation could not be recorded at all.
+   */
+  scope: "user" | "ip" | "guest" | "member" | "error";
   limit: number;
   used: number;
   retryAfterSeconds: number;
@@ -64,17 +67,22 @@ export async function reserveAICall(
   });
 
   if (error || !data) {
-    // Fail open. A failure here means the database is unhealthy, in which case
-    // the route is about to fail on its own writes anyway — it is not an abuse
-    // vector, and blocking legitimate users on it trades a real outage for a
-    // hypothetical one.
+    // Fail closed. This previously allowed the call through on the reasoning
+    // that a database failure would sink the request anyway — but that made
+    // "make the reservation fail" a way to buy unlimited AI calls, and a caller
+    // who could write to ai_usage could arrange exactly that. The spend guard
+    // cannot treat its own failure as permission.
+    //
+    // The cost is small: every one of these routes needs the same database to
+    // read the RFP and store the result, so a caller who cannot reserve is
+    // almost never a caller who could have completed.
     console.error("Rate limit reservation failed:", error?.message);
     return {
-      allowed: true,
-      scope: "user",
+      allowed: false,
+      scope: "error",
       limit: clientLimit,
       used: 0,
-      retryAfterSeconds: 0,
+      retryAfterSeconds: 30,
     };
   }
 
@@ -89,8 +97,23 @@ export async function reserveAICall(
   };
 }
 
-/** Standard 429 for a caller who is over their hourly AI budget. */
+/** Standard refusal for a caller who could not be granted an AI call. */
 export function rateLimitResponse(result: RateLimitResult): NextResponse {
+  // Not a quota refusal — nothing is known about this caller's usage, so any
+  // "you've used N of M" wording would be invented.
+  if (result.scope === "error") {
+    return NextResponse.json(
+      {
+        error:
+          "Couldn't reserve this evaluation just now. Please try again in a moment.",
+      },
+      {
+        status: 503,
+        headers: { "Retry-After": String(result.retryAfterSeconds) },
+      }
+    );
+  }
+
   const minutes = Math.ceil(result.retryAfterSeconds / 60);
   const wait = `Please try again in ${minutes} minute${minutes === 1 ? "" : "s"}.`;
 
