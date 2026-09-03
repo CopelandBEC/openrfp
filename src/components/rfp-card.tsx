@@ -1,10 +1,39 @@
 "use client";
 
 import { useState, useTransition } from "react";
+import { CheckIcon, PencilIcon, Trash2Icon } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { deleteRfp, updateRfp } from "@/app/(app)/dashboard/actions";
+import { cn } from "@/lib/utils";
+
+/**
+ * Where an RFP has got to, and where clicking it should land.
+ *
+ * The card used to show the raw `status` column in small caps — "rubric_ready"
+ * — and always link to the rubric, so returning to a half-finished evaluation
+ * meant re-navigating the whole flow. The four database states map exactly
+ * onto the four stages, so the card can say which one is next and go there.
+ */
+const STAGE = {
+  draft: { step: 1, label: "Needs a rubric", next: "rubric" },
+  rubric_ready: { step: 2, label: "Needs proposals", next: "responses" },
+  evaluating: { step: 3, label: "Scoring", next: "evaluations" },
+  complete: { step: 4, label: "Decided", next: "comparison" },
+} as const;
+
+const TOTAL_STEPS = 4;
+
+function stageFor(status: string) {
+  return (
+    STAGE[status as keyof typeof STAGE] ?? {
+      step: 1,
+      label: status,
+      next: "rubric",
+    }
+  );
+}
 
 export interface RfpSummary {
   id: string;
@@ -134,43 +163,75 @@ export function RfpCard({ rfp }: { rfp: RfpSummary }) {
       ? `${contents.slice(0, -1).join(", ")} and ${contents[contents.length - 1]}`
       : contents[0];
 
+  const stage = stageFor(rfp.status);
+  const finished = stage.step === TOTAL_STEPS;
+
   return (
-    <div className="rounded-lg border p-4 transition-colors hover:bg-muted/30">
+    <div className="group/rfp rounded-xl bg-card p-4 ring-1 ring-foreground/10 transition-shadow hover:shadow-sm">
       <div className="flex items-start justify-between gap-4">
-        <a href={`/rfp/${rfp.id}/rubric`} className="min-w-0 flex-1">
-          <div className="flex items-center gap-3">
-            <h2 className="truncate font-semibold">{rfp.title}</h2>
-            <span className="shrink-0 text-xs uppercase text-muted-foreground">
-              {rfp.status}
-            </span>
-          </div>
+        <a href={`/rfp/${rfp.id}/${stage.next}`} className="min-w-0 flex-1">
+          <h2 className="truncate font-semibold text-foreground">
+            {rfp.title}
+          </h2>
           {rfp.description && (
-            <p className="mt-1 text-sm text-muted-foreground">
+            <p className="mt-1 line-clamp-2 text-sm text-muted-foreground">
               {rfp.description}
             </p>
           )}
+
+          {/* Four pips and a word: how far along, and what happens next. */}
+          <div className="mt-3 flex items-center gap-2.5">
+            <span className="flex items-center gap-1" aria-hidden="true">
+              {Array.from({ length: TOTAL_STEPS }, (_, i) => (
+                <span
+                  key={i}
+                  className={cn(
+                    "h-1 w-5 rounded-full",
+                    i < stage.step ? "bg-viz-mark" : "bg-viz-track"
+                  )}
+                />
+              ))}
+            </span>
+            <span className="flex items-center gap-1 text-xs font-medium text-muted-foreground">
+              {finished && (
+                <CheckIcon
+                  className="size-3"
+                  style={{ color: "var(--status-good)" }}
+                  aria-hidden="true"
+                />
+              )}
+              {stage.label}
+            </span>
+            {rfp.responseCount > 0 && (
+              <span className="text-xs text-muted-foreground">
+                · {rfp.responseCount}{" "}
+                {rfp.responseCount === 1 ? "proposal" : "proposals"}
+              </span>
+            )}
+          </div>
         </a>
 
         {mode === "view" && (
-          <div className="flex shrink-0 gap-1">
+          <div className="flex shrink-0 gap-0.5">
             <Button
               type="button"
-              size="sm"
+              size="icon-sm"
               variant="ghost"
               onClick={() => setMode("edit")}
               aria-label={`Edit ${rfp.title}`}
+              className="text-muted-foreground"
             >
-              Edit
+              <PencilIcon aria-hidden="true" />
             </Button>
             <Button
               type="button"
-              size="sm"
+              size="icon-sm"
               variant="ghost"
-              className="text-destructive hover:text-destructive"
+              className="text-muted-foreground hover:text-destructive"
               onClick={() => setMode("confirm-delete")}
               aria-label={`Delete ${rfp.title}`}
             >
-              Delete
+              <Trash2Icon aria-hidden="true" />
             </Button>
           </div>
         )}

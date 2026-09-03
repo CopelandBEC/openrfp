@@ -2,6 +2,14 @@
 
 import { useState } from "react";
 import { useRouter } from "next/navigation";
+import { FileTextIcon, UploadIcon } from "lucide-react";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { Textarea } from "@/components/ui/textarea";
+import { Label } from "@/components/ui/label";
+import { AppHeader, PageIntro } from "@/components/app-shell";
+import { ErrorState } from "@/components/stage-state";
+import { cn } from "@/lib/utils";
 
 export default function NewRfpPage() {
   const router = useRouter();
@@ -10,6 +18,7 @@ export default function NewRfpPage() {
   const [description, setDescription] = useState("");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
+  const [dragActive, setDragActive] = useState(false);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -46,98 +55,73 @@ export default function NewRfpPage() {
 
   return (
     <div className="min-h-screen bg-background">
-      <header className="border-b">
-        <div className="container mx-auto flex h-16 items-center justify-between px-4">
-          <div className="flex items-center gap-4">
-            <a href="/dashboard" className="text-lg font-bold tracking-tight">
-              OpenRFP
-            </a>
-            <span className="text-sm text-muted-foreground">
-              New RFP Evaluation
-            </span>
-          </div>
-          <a
-            href="/dashboard"
-            className="text-sm text-muted-foreground hover:text-foreground"
-          >
-            ← Back to dashboard
-          </a>
-        </div>
-      </header>
+      <AppHeader label="New evaluation" />
 
-      <main className="container mx-auto max-w-2xl px-4 py-12">
-        <h1 className="text-2xl font-bold tracking-tight">
-          Upload your RFP
-        </h1>
-        <p className="mt-2 text-sm text-muted-foreground">
-          Upload your RFP document. The AI will read it and generate a
-          customized evaluation rubric with weighted criteria.
-        </p>
+      <main className="container mx-auto max-w-2xl px-4 py-10">
+        <PageIntro eyebrow="Step 1 of 4" title="Start with the RFP">
+          OpenRFP reads the document and proposes the criteria to score
+          proposals against, weighted to reflect what the RFP actually asks
+          for. You review every one of them before anything gets scored.
+        </PageIntro>
 
         <form onSubmit={handleSubmit} className="mt-8 space-y-6">
-          <div className="space-y-2">
-            <label htmlFor="title" className="text-sm font-medium">
-              RFP Title
-            </label>
-            <input
-              id="title"
-              type="text"
-              required
-              value={title}
-              onChange={(e) => setTitle(e.target.value)}
-              className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
-              placeholder="e.g., Building Envelope Consulting Services — State University"
-            />
-          </div>
-
-          <div className="space-y-2">
-            <label htmlFor="description" className="text-sm font-medium">
-              Description (optional)
-            </label>
-            <textarea
-              id="description"
-              value={description}
-              onChange={(e) => setDescription(e.target.value)}
-              className="flex min-h-[80px] w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
-              placeholder="Brief description of the procurement..."
-            />
-          </div>
-
-          <div className="space-y-2">
-            <label htmlFor="rfp-file" className="text-sm font-medium">
-              RFP Document
-            </label>
+          {/* The drop target leads, because it is the one thing that must
+              happen here; the two text fields are quick by comparison. */}
+          <div className="space-y-1.5">
+            <Label htmlFor="rfp-file">RFP document</Label>
             {/* A <label> rather than a div with an onClick: the file input is
                 visually hidden, and a label forwards both mouse and keyboard
                 activation to it. The previous markup advertised "browse" but
                 nothing opened the picker — only drag-and-drop worked. */}
             <label
               htmlFor="rfp-file"
-              className="flex min-h-[120px] cursor-pointer flex-col items-center justify-center rounded-lg border-2 border-dashed border-muted-foreground/30 p-6 transition-colors hover:border-muted-foreground/50"
+              className={cn(
+                "flex cursor-pointer flex-col items-center justify-center rounded-xl px-6 py-10 text-center ring-1 transition-colors",
+                dragActive
+                  ? "bg-muted ring-2 ring-primary"
+                  : file
+                    ? "bg-muted/50 ring-foreground/10"
+                    : "bg-muted/30 ring-foreground/10 hover:bg-muted/60"
+              )}
               onDrop={(e) => {
                 e.preventDefault();
+                setDragActive(false);
                 const droppedFile = e.dataTransfer.files[0];
                 if (droppedFile) setFile(droppedFile);
               }}
-              onDragOver={(e) => e.preventDefault()}
+              onDragOver={(e) => {
+                e.preventDefault();
+                setDragActive(true);
+              }}
+              onDragLeave={() => setDragActive(false)}
             >
               {file ? (
-                <div className="text-center">
-                  <p className="text-sm font-medium">{file.name}</p>
-                  <p className="text-xs text-muted-foreground">
-                    {(file.size / 1024 / 1024).toFixed(2)} MB
+                <>
+                  <FileTextIcon
+                    className="size-6 text-primary"
+                    aria-hidden="true"
+                  />
+                  <p className="mt-3 text-sm font-medium text-foreground">
+                    {file.name}
                   </p>
-                </div>
+                  <p className="mt-0.5 text-xs text-muted-foreground">
+                    {(file.size / 1024 / 1024).toFixed(1)} MB · click to choose
+                    a different file
+                  </p>
+                </>
               ) : (
-                <div className="text-center">
-                  <p className="text-sm text-muted-foreground">
-                    Drag and drop your RFP here, or{" "}
-                    <span className="text-primary">browse</span>
+                <>
+                  <UploadIcon
+                    className="size-6 text-muted-foreground"
+                    aria-hidden="true"
+                  />
+                  <p className="mt-3 text-sm font-medium text-foreground">
+                    Drop your RFP here
                   </p>
-                  <p className="mt-1 text-xs text-muted-foreground">
-                    PDF, max 25MB
+                  <p className="mt-0.5 text-xs text-muted-foreground">
+                    PDF, up to 25MB
                   </p>
-                </div>
+                </>
               )}
               <input
                 id="rfp-file"
@@ -151,21 +135,48 @@ export default function NewRfpPage() {
             </label>
           </div>
 
-          {error && (
-            <div className="rounded-md bg-destructive/10 p-3 text-sm text-destructive">
-              {error}
-            </div>
-          )}
+          <div className="space-y-1.5">
+            <Label htmlFor="title">Title</Label>
+            <Input
+              id="title"
+              type="text"
+              required
+              value={title}
+              onChange={(e) => setTitle(e.target.value)}
+              placeholder="Building Envelope Consulting — State University"
+            />
+            <p className="text-xs text-muted-foreground">
+              Used to name the exported report, so make it something a
+              committee would recognise.
+            </p>
+          </div>
 
-          <button
+          <div className="space-y-1.5">
+            <Label htmlFor="description">
+              Description{" "}
+              <span className="font-normal text-muted-foreground">
+                (optional)
+              </span>
+            </Label>
+            <Textarea
+              id="description"
+              value={description}
+              rows={3}
+              onChange={(e) => setDescription(e.target.value)}
+              placeholder="Anything you want to remember about this procurement."
+            />
+          </div>
+
+          {error && <ErrorState message={error} />}
+
+          <Button
             type="submit"
             disabled={!file || !title || loading}
-            className="inline-flex h-10 w-full items-center justify-center rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground ring-offset-background transition-colors hover:bg-primary/90 disabled:cursor-not-allowed disabled:opacity-50"
+            size="lg"
+            className="w-full"
           >
-            {loading
-              ? "Uploading and processing..."
-              : "Upload RFP → Generate Rubric"}
-          </button>
+            {loading ? "Reading your RFP…" : "Build the rubric"}
+          </Button>
         </form>
       </main>
     </div>

@@ -39,6 +39,13 @@
   --color-popover: var(--popover);
   --color-card-foreground: var(--card-foreground);
   --color-card: var(--card);
+  --color-viz-mark: var(--viz-mark);
+  --color-viz-mark-soft: var(--viz-mark-soft);
+  --color-viz-track: var(--viz-track);
+  --color-status-good: var(--status-good);
+  --color-status-warning: var(--status-warning);
+  --color-status-serious: var(--status-serious);
+  --color-status-critical: var(--status-critical);
   --radius-sm: calc(var(--radius) * 0.6);
   --radius-md: calc(var(--radius) * 0.8);
   --radius-lg: var(--radius);
@@ -82,6 +89,59 @@
   --sidebar-accent-foreground: #446904;
   --sidebar-border: #cccccc;
   --sidebar-ring: #446904;
+
+  /* -------------------------------------------------------------------------
+   * Data-viz palette
+   *
+   * One sequential ramp, hue held at the brand primary's 130deg and generated
+   * in OKLCH so the lightness steps are even: step 600 lands on #436801, the
+   * brand green to within a rounding error. Scores are magnitude, so they get
+   * this one hue and never a per-value colour — bar length already carries the
+   * value, and spending hue on it again is what makes a chart lie.
+   *
+   * Checked with the data-viz validator: monotone lightness, every adjacent
+   * step >= 0.06 L apart, single hue (2deg spread), marks >= 3:1 against their
+   * surface, every heat-cell ink pairing >= 4.5:1. The palest bin sits below
+   * 3:1 by design — near-zero recedes toward the surface — which is why every
+   * cell also carries its number.
+   * ---------------------------------------------------------------------- */
+  --viz-100: #e8f6db;
+  --viz-150: #dbeec9;
+  --viz-200: #cce5b5;
+  --viz-250: #b9d89b;
+  --viz-300: #a7cc82;
+  --viz-350: #95bd6a;
+  --viz-400: #85ae56;
+  --viz-450: #749c45;
+  --viz-500: #648b33;
+  --viz-550: #53791f;
+  --viz-600: #436801;
+  --viz-650: #355700;
+  --viz-700: #284700;
+
+  /* Marks and their track. Both re-anchor in dark mode. */
+  --viz-mark: var(--viz-600);
+  --viz-mark-soft: var(--viz-400);
+  --viz-track: var(--viz-150);
+
+  /* Five sequential bins for the score grid, palest = lowest. */
+  --viz-bin-1: var(--viz-150);
+  --viz-bin-2: var(--viz-250);
+  --viz-bin-3: var(--viz-350);
+  --viz-bin-4: var(--viz-550);
+  --viz-bin-5: var(--viz-700);
+  --viz-bin-1-ink: #444343;
+  --viz-bin-2-ink: #444343;
+  --viz-bin-3-ink: #444343;
+  --viz-bin-4-ink: #ffffff;
+  --viz-bin-5-ink: #ffffff;
+
+  /* Status is fixed, never themed, and never carries meaning without an icon
+   * and a word beside it — warning is sub-3:1 on white by design. */
+  --status-good: #0ca30c;
+  --status-warning: #fab219;
+  --status-serious: #ec835a;
+  --status-critical: #d03b3b;
 }
 
 .dark {
@@ -103,6 +163,24 @@
   --border: #444444;
   --input: #444444;
   --ring: #6B9A1E;
+
+  /* Same ramp, re-anchored for the dark card surface (#2a2a2a): marks step
+   * lighter so they still clear 3:1, and the score grid runs dark-to-light so
+   * near-zero recedes toward the surface here too. */
+  --viz-mark: var(--viz-400);
+  --viz-mark-soft: var(--viz-300);
+  --viz-track: var(--viz-650);
+
+  --viz-bin-1: var(--viz-700);
+  --viz-bin-2: var(--viz-600);
+  --viz-bin-3: var(--viz-450);
+  --viz-bin-4: var(--viz-350);
+  --viz-bin-5: var(--viz-200);
+  --viz-bin-1-ink: #ffffff;
+  --viz-bin-2-ink: #ffffff;
+  --viz-bin-3-ink: #1a1a1a;
+  --viz-bin-4-ink: #1a1a1a;
+  --viz-bin-5-ink: #1a1a1a;
 }
 
 @layer base {
@@ -118,5 +196,70 @@
   }
   h2 {
     color: var(--foreground);
+  }
+}
+
+/* ---------------------------------------------------------------------------
+ * Motion
+ *
+ * One entrance, staggered by index via --reveal-i, and one bar/meter growth.
+ * Results arrive after a wait of tens of seconds, so they land rather than
+ * blink into place. Both are opt-out: under prefers-reduced-motion the
+ * elements are simply already where they belong.
+ * ------------------------------------------------------------------------ */
+@keyframes reveal {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+/* The indeterminate sliver on a long model call: it travels, and never
+   pretends to be a fraction of a known total. */
+@keyframes viz-grow {
+  from {
+    transform: scaleX(0);
+  }
+  to {
+    transform: scaleX(1);
+  }
+}
+
+@keyframes working {
+  0% {
+    transform: translateX(-100%);
+  }
+  100% {
+    transform: translateX(300%);
+  }
+}
+
+@layer utilities {
+  .animate-reveal {
+    animation: reveal 320ms cubic-bezier(0.22, 1, 0.36, 1) both;
+    animation-delay: calc(var(--reveal-i, 0) * 55ms);
+  }
+
+  /* Grows from its baseline on mount. This scales rather than transitioning
+     width, so the final width can be set inline from the data and still
+     animate on first paint — a transition needs two values and would need a
+     render pass to get them. */
+  .viz-grow {
+    transform-origin: left center;
+    animation: viz-grow 620ms cubic-bezier(0.22, 1, 0.36, 1) both;
+    animation-delay: calc(var(--reveal-i, 0) * 55ms);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .animate-reveal {
+    animation: none;
+  }
+  .viz-grow {
+    animation: none;
   }
 }

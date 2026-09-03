@@ -1,7 +1,12 @@
 import { redirect } from "next/navigation";
+import Link from "next/link";
+import { PlusIcon } from "lucide-react";
 import { createClient } from "@/lib/supabase/server";
 import { SignOutButton } from "@/components/sign-out-button";
 import { RfpCard } from "@/components/rfp-card";
+import { AppHeader } from "@/components/app-shell";
+import { EmptyState } from "@/components/stage-state";
+import { Button } from "@/components/ui/button";
 import { isGuest } from "@/lib/auth/guest";
 
 export default async function DashboardPage({
@@ -28,14 +33,9 @@ export default async function DashboardPage({
 
   return (
     <div className="min-h-screen bg-background">
-      <header className="border-b">
-        <div className="container mx-auto flex h-16 items-center justify-between px-4">
-          <div className="flex items-center gap-4">
-            <span className="text-lg font-bold tracking-tight">OpenRFP</span>
-            <span className="text-sm text-muted-foreground">
-              Dashboard
-            </span>
-          </div>
+      <AppHeader
+        label="Dashboard"
+        action={
           <SignOutButton
             isGuest={guest}
             action={async () => {
@@ -45,10 +45,10 @@ export default async function DashboardPage({
               redirect("/login");
             }}
           />
-        </div>
-      </header>
+        }
+      />
 
-      <main className="container mx-auto px-4 py-12">
+      <main className="container mx-auto max-w-3xl px-4 py-10">
         {saved === "1" && !guest && (
           <p
             className="mb-8 rounded-md border border-primary/30 bg-primary/5 p-3 text-sm text-foreground"
@@ -62,21 +62,21 @@ export default async function DashboardPage({
           </p>
         )}
 
-        <div className="flex items-center justify-between">
+        <div className="flex items-start justify-between gap-4">
           <div>
-            <h1 className="text-2xl font-bold tracking-tight">
+            <h1 className="text-2xl font-bold tracking-tight text-foreground">
               Your RFPs
             </h1>
-            <p className="mt-1 text-sm text-muted-foreground">
-              Manage your RFP evaluations
+            <p className="mt-1.5 text-sm text-muted-foreground">
+              {rfps?.length
+                ? "Pick up where you left off — each card shows what comes next."
+                : "Upload an RFP and OpenRFP will build the rubric to score against."}
             </p>
           </div>
-          <a
-            href="/rfp/new"
-            className="inline-flex h-10 items-center justify-center rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground ring-offset-background transition-colors hover:bg-primary/90"
-          >
-            New RFP Evaluation
-          </a>
+          <Button size="lg" render={<Link href="/rfp/new" />}>
+            <PlusIcon aria-hidden="true" />
+            New evaluation
+          </Button>
         </div>
 
         <div className="mt-8">
@@ -98,12 +98,19 @@ export default async function DashboardPage({
               ))}
             </div>
           ) : (
-            <div className="rounded-lg border border-dashed p-8 text-center">
-              <p className="text-sm text-muted-foreground">
-                No RFPs yet. Click &quot;New RFP Evaluation&quot; to get
-                started.
-              </p>
-            </div>
+            <EmptyState
+              title="Nothing here yet"
+              action={
+                <Button render={<Link href="/rfp/new" />}>
+                  <PlusIcon aria-hidden="true" />
+                  Start an evaluation
+                </Button>
+              }
+            >
+              Upload an RFP, accept or edit the rubric it proposes, then drop in
+              the vendor proposals. You get scores with the passage behind each
+              one quoted.
+            </EmptyState>
           )}
         </div>
       </main>

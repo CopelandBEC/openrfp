@@ -277,6 +277,61 @@ reply as JSON. Document text is truncated at `AI_MAX_DOC_CHARS` (default
 400,000) before it is sent, so a very long PDF doesn't overrun a smaller
 model's context window. See `.env.example` for all options.
 
+### Latency
+
+On a reasoning model, the dominant cost is the thinking that happens before the
+JSON starts, and most models default to their highest effort. Three variables
+set it per call site — `AI_REASONING_EFFORT_RUBRIC`,
+`AI_REASONING_EFFORT_EVALUATION` and `AI_REASONING_EFFORT_COMPARISON` — with
+the middle one, the call that runs once per proposal, deliberately low: it is
+applying a rubric that already exists. Set a variable to an empty string to
+omit the parameter, for a model that does not accept it.
+
+Two things beyond model choice matter as much:
+
+- The responses screen evaluates proposals concurrently, capped at
+  `EVALUATION_CONCURRENCY` in `src/app/(app)/rfp/[id]/responses/page.tsx`.
+  Serialised, an RFP cost one model call's latency per proposal.
+- The evaluation prompt puts the system instructions and the rubric ahead of
+  anything vendor-specific, so every proposal under one RFP shares a
+  byte-identical prefix. The routes send that RFP's id as `prompt_cache_key`
+  and in the `x-session-affinity` header, which is what keeps those calls on a
+  replica that already has the prefix cached. Reordering the prompt or changing
+  the reasoning effort invalidates the cached prefix.
+
+## Interface conventions
+
+Two rules shape every result screen, and breaking either is how these pages
+became walls of text the first time.
+
+**The answer first, the evidence behind a press.** Each screen opens with the
+one thing the reader came for — the rubric's weighting, a proposal's score and
+where it is thin, the recommended vendor and how far clear of second place it
+is. Everything that supports it (a criterion's reasoning, the quoted passage,
+the model and prompt version, the full comparative analysis) lives inside an
+`Accordion` or `Collapsible` from `src/components/ui/`. Nothing is dropped to
+make room; it is folded. The exported HTML report follows the same order using
+native `<details>`.
+
+**Colour encodes one thing at a time.** `src/app/globals.css` defines a single
+sequential green ramp (`--viz-100` … `--viz-700`), generated in OKLCH from the
+brand primary so its lightness steps are even, plus the five heat-grid bins and
+their ink colours. Scores are magnitude: every bar wears `--viz-mark` and the
+length carries the value, because colouring a bar by its own value spends the
+identity channel restating what length already shows. Judgement is carried by
+the verdict word from `src/lib/score.ts` (`TierChip`), never by hue alone —
+status colour rides an icon beside a label so it survives greyscale printing
+and colour-blind readers.
+
+The ramp, the bins and every ink pairing were checked with the data-viz
+validator: monotone lightness, adjacent steps at least 0.06 L apart, a single
+hue, marks clearing 3:1 on their surface in both modes, and every heat-cell
+number clearing 4.5:1 against its cell. The palest bin sits below 3:1 on
+purpose — near-zero recedes toward the surface — which is why every cell also
+prints its number. `src/lib/score.ts` is the single source of truth for
+thresholds, so a criterion that reads "Mixed" on screen reads "Mixed" in the
+CSV and the report.
+
 ## Status
 
 OpenRFP is in active development and not yet production-ready. The full flow —
