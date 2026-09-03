@@ -395,7 +395,9 @@ button.expand {
   .rank-row .bar { display: none; }
 }
 
-@media (prefers-color-scheme: dark) {
+/* Screen only. Printed from a dark system theme, this palette put near-white
+   ink on paper whose dark background the browser had dropped. */
+@media screen and (prefers-color-scheme: dark) {
   :root {
     --ink: #f2f2ee; --ink-soft: #b4b3ad; --ink-faint: #8a8989;
     --surface: #1a1a1a; --surface-sunk: #242424; --rule: #3a3a38;
