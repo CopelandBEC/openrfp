@@ -63,19 +63,19 @@ export interface ReportData {
   closeCalls: ReportCloseCall[];
   interviewFocusAreas: string[];
   /**
-   * Set when a score has been changed since the ranking was produced.
-   *
-   * The scores in the report are always the current ones; this says the order
-   * around them may predate an edit. A committee reading a printed ranking has
-   * no way to find that out otherwise.
+   * Set when the saved ranking no longer describes the field: a score changed,
+   * a proposal added or removed, the rubric edited. A committee reading a
+   * printed ranking has no way to find that out otherwise.
    */
   rankingStale?: boolean;
   /**
-   * Set when the scores themselves are not all current — a proposal not yet
-   * scored, or scored against an earlier rubric. The report must not then
-   * describe its scores as current, whatever the ranking says.
+   * Whether every score in the report is a live, current one. False when a
+   * proposal is unscored, scored against an earlier rubric, or removed since
+   * the ranking (it keeps the score it had when ranked, because that is all
+   * there is). The report must not then call its scores current, whatever
+   * else it says.
    */
-  needsScoringFirst?: boolean;
+  scoresCurrent?: boolean;
   /** What changed, one clause each. Printed under the ranking. */
   stalenessReasons?: string[];
 }
@@ -615,11 +615,10 @@ export function buildReportHtml(data: ReportData): string {
   const stale = data.rankingStale
     ? `<p class="stale"><strong>This ranking is out of date.</strong>
        ${
-         data.needsScoringFirst
-           ? `Not every proposal is scored against the rubric as it now
-       stands — the note below says which — so the scores here cannot all
-       be relied on. Score them in OpenRFP and re-rank before using this
-       report.`
+         data.scoresCurrent === false
+           ? `Not every score in this report is current — the note below says
+       which — so they cannot all be relied on. Bring the scoring up to date
+       in OpenRFP and re-rank before using this report.`
            : `Every score in this report is the current one; the order is the
        one the model gave before the change. Re-rank in OpenRFP to bring the
        two back into line.`

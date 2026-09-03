@@ -114,10 +114,19 @@ export async function POST(request: NextRequest) {
 
   // Every proposal in the RFP, not just the scored ones: the field the
   // ranking has to describe is all of them.
-  const { data: responses } = await supabase
+  const { data: responses, error: responsesError } = await supabase
     .from("responses")
     .select("id, vendor_name")
     .eq("rfp_id", rfp_id);
+
+  // Fail closed. Read as an empty set, a failed lookup would pass the guard
+  // below as "nothing unscored" and rank a field of unknown vendors.
+  if (responsesError) {
+    return NextResponse.json(
+      { error: "Failed to load proposals. Please try again." },
+      { status: 500 }
+    );
+  }
 
   const vendorMap = new Map<string, string>(
     (responses || []).map((r: ResponseRow) => [r.id, r.vendor_name])

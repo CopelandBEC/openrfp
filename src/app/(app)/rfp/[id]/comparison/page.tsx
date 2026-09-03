@@ -486,6 +486,14 @@ export default function ComparisonPage({
   const needsScoringFirst =
     rubricChangedSinceScoring || awaitingScoreSinceRanking.length > 0;
 
+  /**
+   * Whether every score shown is a live, current one. False when a proposal
+   * is unscored or scored against an old rubric, and also when a ranked
+   * proposal has been removed: it stays in the list with the score it had
+   * when ranked, because that is all there is.
+   */
+  const scoresCurrent = !needsScoringFirst && removedSinceRanking.length === 0;
+
   /** Said in one line each, on the page and in the exported report. */
   const stalenessReasons = useMemo(() => {
     const reasons: string[] = [];
@@ -618,7 +626,7 @@ export default function ComparisonPage({
       vendors,
       comparativeAnalysis: comparison.comparative_analysis,
       rankingStale,
-      needsScoringFirst,
+      scoresCurrent,
       stalenessReasons,
       closeCalls: (comparison.close_calls ?? []).map((cc) => ({
         criterionName: cc.criterion_name,
@@ -634,7 +642,7 @@ export default function ComparisonPage({
     comparison,
     rankedVendors,
     rankingStale,
-    needsScoringFirst,
+    scoresCurrent,
     stalenessReasons,
     criteriaList,
     rfpTitle,
@@ -761,11 +769,13 @@ export default function ComparisonPage({
                   />
                 </div>
 
-                {/* A margin is only meaningful while the order holds. Once an
-                    edit has reordered the field, subtracting the live scores of
-                    the old first and second yields a negative "points clear",
-                    which is worse than saying nothing. */}
-                {margin != null && runnerUp && !orderChanged && (
+                {/* A margin is a claim about the field as it stands, so it is
+                    only made while the ranking still describes the field.
+                    Reordering makes the subtraction negative; a newly scored
+                    bidder above both makes the old runner-up the wrong one to
+                    measure against; a removed one has no live score at all.
+                    Any of those is worse than saying nothing. */}
+                {margin != null && runnerUp && !rankingStale && (
                   <p
                     className="mt-5 border-t border-border/60 pt-4 text-sm text-foreground"
                     // The close-call warning is a genuine caution about the
@@ -822,7 +832,9 @@ export default function ComparisonPage({
                       ? "Some scores below were made against an earlier rubric, so they need scoring again before a re-rank means anything."
                       : awaitingScoreSinceRanking.length > 0
                         ? "A proposal has been added that this ranking has not seen. Score it first; re-ranking now would still leave it out."
-                        : "The scores below are current; the order is the one the model gave before the change."}
+                        : removedSinceRanking.length > 0
+                          ? "A ranked proposal is no longer scored. Its number below is the one it had when ranked, and the order is the one the model gave then."
+                          : "The scores below are current; the order is the one the model gave before the change."}
                     <span className="mt-1.5 block text-muted-foreground">
                       {stalenessReasons.join(" ")}
                     </span>
