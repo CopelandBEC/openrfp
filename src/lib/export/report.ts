@@ -56,7 +56,15 @@ export interface ReportCloseCall {
 export interface ReportData {
   rfpTitle: string;
   generatedAt: string;
-  modelUsed?: string | null;
+  /** The model that produced the ranking — `comparisons.model_used`. */
+  rankingModel?: string | null;
+  /**
+   * The model or models that scored the proposals — every distinct
+   * `evaluations.model_used`. Not the same fact as `rankingModel`: AI_MODEL
+   * can change between scoring and ranking, and a report that named the
+   * ranking model as the scorer misattributed the scores.
+   */
+  scoringModels?: string[];
   criteria: ReportCriterion[];
   vendors: ReportVendor[];
   comparativeAnalysis?: string;
@@ -687,8 +695,10 @@ export function buildReportHtml(data: ReportData): string {
     ${esc(data.vendors.length)} proposals · ${esc(
       data.criteria.length
     )} criteria · ${esc(data.generatedAt)}${
-      data.modelUsed ? ` · scored by ${esc(data.modelUsed)}` : ""
-    }
+      data.scoringModels?.length
+        ? ` · scored by ${data.scoringModels.map((m) => esc(m)).join(", ")}`
+        : ""
+    }${data.rankingModel ? ` · ranked by ${esc(data.rankingModel)}` : ""}
   </p>
 
   ${verdict}

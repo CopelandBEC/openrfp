@@ -494,6 +494,24 @@ export default function ComparisonPage({
    */
   const scoresCurrent = !needsScoringFirst && removedSinceRanking.length === 0;
 
+  /**
+   * Where a re-rank has to be redirected, if anywhere. Scoring comes first;
+   * then the count, since the compare route refuses fewer than two scored
+   * proposals and re-ranking a field of one is nothing to rank against. Null
+   * means re-ranking is the right next action.
+   */
+  const rerankBlockedBy: "scoring" | "count" | null = needsScoringFirst
+    ? "scoring"
+    : evaluations.length < 2
+      ? "count"
+      : null;
+  const rerankRedirectLabel =
+    rerankBlockedBy === "scoring"
+      ? rubricChangedSinceScoring
+        ? "Re-score proposals"
+        : "Score proposals"
+      : "Add another proposal";
+
   /** Said in one line each, on the page and in the exported report. */
   const stalenessReasons = useMemo(() => {
     const reasons: string[] = [];
@@ -616,7 +634,15 @@ export default function ComparisonPage({
         undefined,
         { year: "numeric", month: "long", day: "numeric" }
       ),
-      modelUsed: comparison.model_used ?? null,
+      // Two different facts. The comparison row names the model that ranked;
+      // each evaluation names the model that scored it, and AI_MODEL can
+      // change between the two.
+      rankingModel: comparison.model_used ?? null,
+      scoringModels: [
+        ...new Set(
+          evaluations.map((e) => e.model_used).filter((m): m is string => !!m)
+        ),
+      ],
       criteria: criteriaList.map((c) => ({
         id: c.id,
         name: c.name,
@@ -640,6 +666,7 @@ export default function ComparisonPage({
     };
   }, [
     comparison,
+    evaluations,
     rankedVendors,
     rankingStale,
     scoresCurrent,
@@ -848,21 +875,23 @@ export default function ComparisonPage({
                       : awaitingScoreSinceRanking.length > 0
                         ? "A proposal has been added that this ranking has not seen. Score it first; re-ranking now would still leave it out."
                         : removedSinceRanking.length > 0
-                          ? "A ranked proposal is no longer scored. Its number below is the one it had when ranked, and the order is the one the model gave then."
+                          ? `A ranked proposal is no longer scored. Its number below is the one it had when ranked, and the order is the one the model gave then.${
+                              rerankBlockedBy === "count"
+                                ? " A ranking needs at least two scored proposals, so add another before re-ranking."
+                                : ""
+                            }`
                           : "The scores below are current; the order is the one the model gave before the change."}
                     <span className="mt-1.5 block text-muted-foreground">
                       {stalenessReasons.join(" ")}
                     </span>
                   </span>
                 </p>
-                {needsScoringFirst ? (
+                {rerankBlockedBy ? (
                   <Button
                     size="sm"
                     render={<Link href={`/rfp/${id}/responses`} />}
                   >
-                    {rubricChangedSinceScoring
-                      ? "Re-score proposals"
-                      : "Score proposals"}
+                    {rerankRedirectLabel}
                   </Button>
                 ) : (
                   <Button
@@ -1144,14 +1173,16 @@ export default function ComparisonPage({
                   ranking of a field with unscored or old-rubric proposals in
                   it is out of date the moment it is saved, and costs a model
                   call to find that out. */}
-              {needsScoringFirst ? (
+              {rerankBlockedBy ? (
                 <Button
                   variant="ghost"
                   render={<Link href={`/rfp/${id}/responses`} />}
                   className="ml-auto text-muted-foreground"
                 >
                   <RotateCcwIcon aria-hidden="true" />
-                  Score proposals first
+                  {rerankBlockedBy === "scoring"
+                    ? "Score proposals first"
+                    : "Add another proposal"}
                 </Button>
               ) : (
                 <Button
@@ -1170,7 +1201,7 @@ export default function ComparisonPage({
               first and every score, quote and page reference behind a
               disclosure.
               {comparison.model_used && (
-                <> Scored by {comparison.model_used}.</>
+                <> Ranked by {comparison.model_used}.</>
               )}
             </p>
           </>

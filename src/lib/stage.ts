@@ -162,11 +162,12 @@ export function deriveStage({
     };
   }
   // A ranking needs something to rank against. With one proposal there is no
-  // comparison to make and the evaluations screen offers no way on to the
-  // decision, so say what is actually missing rather than "Ready to rank".
-  // A ranking that already exists for a single proposal is left to the checks
-  // below, which describe it as it is.
-  if (responseCount < 2 && !hasRanking) {
+  // comparison to make, the evaluations screen offers no way on to the
+  // decision and the compare route refuses, so say what is actually missing
+  // rather than "Ready to rank" — or "Needs re-ranking", which is where a
+  // ranked pair with one proposal since deleted landed, and is the same dead
+  // end with a stale ranking behind it.
+  if (responseCount < 2) {
     return {
       step: 2,
       label: "Needs a second proposal",
