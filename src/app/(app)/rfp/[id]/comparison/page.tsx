@@ -385,6 +385,24 @@ export default function ComparisonPage({
     [evaluatedResponses, rankedIds]
   );
 
+  /**
+   * Proposals uploaded since the ranking and not yet scored.
+   *
+   * The field is every proposal, not every scored one. An unscored addition
+   * is absent from `evaluatedResponses`, so without this the page went on
+   * calling the old winner recommended and exporting a report with a bidder
+   * missing, while the dashboard for the same RFP said scoring was still to
+   * do. Re-ranking does not fix it — the ranking still would not see the
+   * proposal — so the owner is sent to score it first.
+   */
+  const awaitingScoreSinceRanking = useMemo(
+    () =>
+      responses.filter(
+        (r) => !rankedIds.has(r.id) && !evalByResponseId.has(r.id)
+      ),
+    [responses, rankedIds, evalByResponseId]
+  );
+
   /** Ranked entries whose evaluation is gone. */
   const removedSinceRanking = useMemo(
     () => rankedVendors.filter((v) => !v.evaluation),
@@ -458,10 +476,15 @@ export default function ComparisonPage({
 
   const rankingStale =
     rubricChangedSinceScoring ||
+    awaitingScoreSinceRanking.length > 0 ||
     evaluationsEditedSinceRanking ||
     scoresMoved ||
     addedSinceRanking.length > 0 ||
     removedSinceRanking.length > 0;
+
+  /** Whether re-ranking now would still leave something out. */
+  const needsScoringFirst =
+    rubricChangedSinceScoring || awaitingScoreSinceRanking.length > 0;
 
   /** Said in one line each, on the page and in the exported report. */
   const stalenessReasons = useMemo(() => {
@@ -471,6 +494,15 @@ export default function ComparisonPage({
         `The rubric changed after ${scoredAgainstOldRubric.length} proposal${
           scoredAgainstOldRubric.length === 1 ? " was" : "s were"
         } scored: ${scoredAgainstOldRubric
+          .map((r) => r.vendor_name)
+          .join(", ")}.`
+      );
+    }
+    if (awaitingScoreSinceRanking.length > 0) {
+      reasons.push(
+        `${awaitingScoreSinceRanking.length} proposal${
+          awaitingScoreSinceRanking.length === 1 ? "" : "s"
+        } added since this ranking and not yet scored: ${awaitingScoreSinceRanking
           .map((r) => r.vendor_name)
           .join(", ")}.`
       );
@@ -509,6 +541,7 @@ export default function ComparisonPage({
   }, [
     rankingSawUpTo,
     scoredAgainstOldRubric,
+    awaitingScoreSinceRanking,
     addedSinceRanking,
     removedSinceRanking,
     orderChanged,
@@ -779,18 +812,22 @@ export default function ComparisonPage({
                     </span>{" "}
                     {rubricChangedSinceScoring
                       ? "Some scores below were made against an earlier rubric, so they need scoring again before a re-rank means anything."
-                      : "The scores below are current; the order is the one the model gave before the change."}
+                      : awaitingScoreSinceRanking.length > 0
+                        ? "A proposal has been added that this ranking has not seen. Score it first; re-ranking now would still leave it out."
+                        : "The scores below are current; the order is the one the model gave before the change."}
                     <span className="mt-1.5 block text-muted-foreground">
                       {stalenessReasons.join(" ")}
                     </span>
                   </span>
                 </p>
-                {rubricChangedSinceScoring ? (
+                {needsScoringFirst ? (
                   <Button
                     size="sm"
                     render={<Link href={`/rfp/${id}/responses`} />}
                   >
-                    Re-score proposals
+                    {rubricChangedSinceScoring
+                      ? "Re-score proposals"
+                      : "Score proposals"}
                   </Button>
                 ) : (
                   <Button
