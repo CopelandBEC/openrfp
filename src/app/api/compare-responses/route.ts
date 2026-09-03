@@ -1,9 +1,11 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createClient } from "@/lib/supabase/server";
 import {
+  cacheAffinityOptions,
   createAIClient,
   getMaxCompletionTokens,
   getModelId,
+  getReasoningEffort,
   parseModelJson,
 } from "@/lib/ai/client";
 import {
@@ -125,16 +127,23 @@ export async function POST(request: NextRequest) {
     JSON.stringify(rubric.criteria)
   );
 
+  const reasoningEffort = getReasoningEffort("comparison");
+
   try {
-    const response = await client.chat.completions.create({
-      model,
-      messages: [
-        { role: "system", content: system },
-        { role: "user", content: userPrompt },
-      ],
-      response_format: { type: "json_object" },
-      max_tokens: getMaxCompletionTokens(),
-    });
+    const response = await client.chat.completions.create(
+      {
+        model,
+        messages: [
+          { role: "system", content: system },
+          { role: "user", content: userPrompt },
+        ],
+        response_format: { type: "json_object" },
+        max_tokens: getMaxCompletionTokens(),
+        ...(reasoningEffort ? { reasoning_effort: reasoningEffort } : {}),
+        prompt_cache_key: rfp_id,
+      },
+      cacheAffinityOptions(rfp_id)
+    );
 
     const content = response.choices[0]?.message?.content;
     if (!content) {
@@ -176,7 +185,11 @@ export async function POST(request: NextRequest) {
       rfp_id,
       user_id: user.id,
       action: "compare_responses",
-      details: { model, evaluation_count: evaluations.length },
+      details: {
+        model,
+        evaluation_count: evaluations.length,
+        reasoning_effort: reasoningEffort ?? null,
+      },
     });
 
     return NextResponse.json({ comparison: savedComparison });

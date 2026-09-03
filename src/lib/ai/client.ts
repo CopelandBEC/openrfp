@@ -1,4 +1,5 @@
 import OpenAI from "openai";
+import type { ReasoningEffort } from "openai/resources/shared";
 
 export interface AIConfig {
   provider: string;
@@ -26,6 +27,62 @@ export function createAIClient(): OpenAI {
 
 export function getModelId(): string {
   return getAIConfig().model;
+}
+
+/** The three structured-output call sites, which want different tuning. */
+export type AITask = "rubric" | "evaluation" | "comparison";
+
+const REASONING_EFFORT_DEFAULTS: Record<AITask, string> = {
+  // Drafting criteria from a bare RFP is the one call worth thinking hard about.
+  rubric: "high",
+  // Scoring against a rubric that already exists is not.
+  evaluation: "low",
+  // One call per RFP over the finished evaluations, and the ranking is what the
+  // owner acts on — small input, so thinking hard here costs little wall clock.
+  comparison: "high",
+};
+
+/**
+ * How hard the model should think before it answers, per call site.
+ *
+ * The default model reasons first and its own default effort is the maximum —
+ * thousands of tokens of thought before the JSON starts, which is the latency
+ * described on `getMaxCompletionTokens` below. Left unset, every call paid for
+ * that, including the ones that are just applying an existing rubric.
+ *
+ * Not every model accepts this parameter and AI_MODEL is meant to be swapped
+ * freely, so setting the variable to an empty string omits it from the request.
+ * Any other value is sent as given, so a model with its own vocabulary of
+ * effort levels needs no code change here.
+ */
+export function getReasoningEffort(task: AITask): ReasoningEffort | undefined {
+  const raw =
+    task === "rubric"
+      ? process.env.AI_REASONING_EFFORT_RUBRIC
+      : task === "evaluation"
+        ? process.env.AI_REASONING_EFFORT_EVALUATION
+        : process.env.AI_REASONING_EFFORT_COMPARISON;
+  const value = (raw ?? REASONING_EFFORT_DEFAULTS[task]).trim();
+  return value === "" ? undefined : (value as ReasoningEffort);
+}
+
+/**
+ * Per-request options that keep a repeated prompt prefix warm.
+ *
+ * The provider caches prompt prefixes automatically, but the cache lives on
+ * whichever replica served the request. Without an affinity hint the proposals
+ * in one RFP scatter across replicas and each re-reads the whole rubric from
+ * cold. Keying on the RFP id sends them all to the same place, so the shared
+ * system-prompt-plus-rubric prefix is read once.
+ *
+ * Pair this with `prompt_cache_key` in the request body — the header routes the
+ * request, the body field names the cache entry. Providers that implement
+ * neither ignore both.
+ */
+export function cacheAffinityOptions(key: string): {
+  headers: Record<string, string>;
+} {
+  return { headers: { "x-session-affinity": key } };
 }
 
 /**
