@@ -9,13 +9,14 @@ export interface AIConfig {
 }
 
 const DEFAULT_MODEL = "accounts/fireworks/models/kimi-k3";
+const DEFAULT_BASE_URL = "https://api.fireworks.ai/inference/v1";
 
 export function getAIConfig(): AIConfig {
   return {
     provider: process.env.AI_PROVIDER || "fireworks",
     model: process.env.AI_MODEL || DEFAULT_MODEL,
     apiKey: process.env.FIREWORKS_API_KEY || process.env.AI_API_KEY || "",
-    baseURL: process.env.AI_BASE_URL || "https://api.fireworks.ai/inference/v1",
+    baseURL: process.env.AI_BASE_URL || DEFAULT_BASE_URL,
   };
 }
 
@@ -75,6 +76,25 @@ export function getReasoningEffort(task: AITask): ReasoningEffort | undefined {
 }
 
 /**
+ * The request-body half of the prompt-cache hint: names the cache entry.
+ *
+ * Sent only to the default endpoint. A body field is not a header — a strict
+ * OpenAI-compatible endpoint that does not implement `prompt_cache_key`
+ * rejects the whole request rather than ignoring it, and AI_BASE_URL is meant
+ * to be pointed anywhere. A deployment that has pointed it elsewhere keeps
+ * working as it did before this branch; it can opt in with
+ * AI_PROMPT_CACHE_KEY=1 if its endpoint takes the field.
+ */
+export function promptCacheOptions(key: string): { prompt_cache_key?: string } {
+  const raw = process.env.AI_PROMPT_CACHE_KEY?.trim();
+  const enabled =
+    raw === undefined || raw === ""
+      ? getAIConfig().baseURL === DEFAULT_BASE_URL
+      : raw !== "0" && raw.toLowerCase() !== "false";
+  return enabled ? { prompt_cache_key: key } : {};
+}
+
+/**
  * Per-request options that keep a repeated prompt prefix warm.
  *
  * The provider caches prompt prefixes automatically, but the cache lives on
@@ -83,9 +103,10 @@ export function getReasoningEffort(task: AITask): ReasoningEffort | undefined {
  * cold. Keying on the RFP id sends them all to the same place, so the shared
  * system-prompt-plus-rubric prefix is read once.
  *
- * Pair this with `prompt_cache_key` in the request body — the header routes the
- * request, the body field names the cache entry. Providers that implement
- * neither ignore both.
+ * Pair this with `promptCacheOptions` in the request body — the header routes
+ * the request, the body field names the cache entry. An unknown header is
+ * ignored by any HTTP server, so this half is safe to send anywhere; the body
+ * half is not, and is gated.
  *
  * The key is sanitised because it becomes an HTTP header value and, in
  * compare-responses, originates in the request body. Nothing exploitable

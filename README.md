@@ -309,10 +309,14 @@ Two things beyond model choice matter as much:
   Serialised, an RFP cost one model call's latency per proposal.
 - The evaluation prompt puts the system instructions and the rubric ahead of
   anything vendor-specific, so every proposal under one RFP shares a
-  byte-identical prefix. The routes send that RFP's id as `prompt_cache_key`
-  and in the `x-session-affinity` header, which is what keeps those calls on a
-  replica that already has the prefix cached. Reordering the prompt or changing
-  the reasoning effort invalidates the cached prefix.
+  byte-identical prefix. The routes send that RFP's id in the
+  `x-session-affinity` header and, to the default endpoint, as
+  `prompt_cache_key` in the body, which is what keeps those calls on a replica
+  that already has the prefix cached. The body field goes only to the default
+  `AI_BASE_URL`: a strict OpenAI-compatible endpoint that does not implement it
+  rejects the request. Set `AI_PROMPT_CACHE_KEY=1` to send it elsewhere, or `0`
+  to withhold it. Reordering the prompt or changing the reasoning effort
+  invalidates the cached prefix.
 
 ## Interface conventions
 

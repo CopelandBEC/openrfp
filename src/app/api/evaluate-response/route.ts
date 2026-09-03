@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { createClient } from "@/lib/supabase/server";
 import {
   cacheAffinityOptions,
+  promptCacheOptions,
   createAIClient,
   getMaxCompletionTokens,
   getModelId,
@@ -136,7 +137,7 @@ export async function POST(request: NextRequest) {
         response_format: { type: "json_object" },
         max_tokens: getMaxCompletionTokens(),
         ...(reasoningEffort ? { reasoning_effort: reasoningEffort } : {}),
-        prompt_cache_key: cacheKey,
+        ...promptCacheOptions(cacheKey),
       },
       cacheAffinityOptions(cacheKey)
     );
