@@ -71,7 +71,7 @@ export async function POST(request: NextRequest) {
   // scores made against an earlier one.
   const { data: rubric } = await supabase
     .from("rubrics")
-    .select("criteria, updated_at")
+    .select("criteria, updated_at, edited_by_user")
     .eq("rfp_id", responseRecord.rfp_id)
     .single();
 
@@ -79,6 +79,15 @@ export async function POST(request: NextRequest) {
     return NextResponse.json(
       { error: "No rubric found for this RFP" },
       { status: 400 }
+    );
+  }
+  // Scoring is against a rubric a human has signed off on. Regenerating the
+  // rubric resets that, and the screens stop offering scoring until it is
+  // accepted again; this is the same rule for any caller.
+  if (rubric.edited_by_user !== true) {
+    return NextResponse.json(
+      { error: "Review and accept the rubric before scoring against it." },
+      { status: 409 }
     );
   }
 

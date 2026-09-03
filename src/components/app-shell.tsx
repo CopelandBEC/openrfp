@@ -5,7 +5,12 @@ import Link from "next/link"
 import { CheckIcon } from "lucide-react"
 
 import { createClient } from "@/lib/supabase/client"
-import { embeddedCount, reachedStages, type StageName } from "@/lib/stage"
+import {
+  embeddedCount,
+  firstEmbedded,
+  reachedStages,
+  type StageName,
+} from "@/lib/stage"
 import { cn } from "@/lib/utils"
 
 /**
@@ -41,14 +46,20 @@ function useReachedStages(rfpId: string): Set<StageName> {
     let cancelled = false
     supabase
       .from("rfps")
-      .select("rubrics(count), evaluations(count), comparisons(count)")
+      .select(
+        "rubrics(edited_by_user), evaluations(count), comparisons(count)"
+      )
       .eq("id", rfpId)
       .maybeSingle()
       .then(({ data }) => {
         if (cancelled || !data) return
+        const rubric = firstEmbedded<{ edited_by_user: boolean | null }>(
+          data.rubrics
+        )
         setReached(
           reachedStages({
-            hasRubric: embeddedCount(data.rubrics) > 0,
+            hasRubric: rubric != null,
+            rubricAccepted: rubric?.edited_by_user === true,
             evaluationCount: embeddedCount(data.evaluations),
             hasRanking: embeddedCount(data.comparisons) > 0,
           })

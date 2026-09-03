@@ -349,6 +349,16 @@ export default function ComparisonPage({
   }, [comparison]);
 
   /**
+   * Exactly which evaluation versions the saved ranking read; see
+   * `evaluationsEditedSinceRanking` below for what it is compared with.
+   */
+  const rankingSaw = useMemo(
+    () =>
+      comparison ? evaluationRevisionsOf(comparison.evaluation_revisions) : null,
+    [comparison]
+  );
+
+  /**
    * The ranked field, with live scores.
    *
    * `comparisons.ranking` is a snapshot taken when the comparison ran. An
@@ -379,14 +389,23 @@ export default function ComparisonPage({
           evaluation,
           score,
           rankedScore,
-          // Half a point of drift is a real edit, not float noise.
+          // Whether this evaluation has been written since the ranking read
+          // it. Decided from the recorded revision, not from the numbers:
+          // `rankedScore` is the model's own copy of the overall and it
+          // rounds, so a numeric comparison called every fresh ranking
+          // drifted. A ranking that does not say what it saw is reported
+          // as out of date elsewhere; nothing here needs to guess.
           moved:
-            score != null &&
-            rankedScore != null &&
-            Math.abs(score - rankedScore) > 0.05,
+            evaluation != null &&
+            rankingSaw != null &&
+            entry.response_id in rankingSaw &&
+            !sameInstant(
+              rankingSaw[entry.response_id],
+              evaluation.updated_at ?? evaluation.created_at
+            ),
         };
       }),
-    [sortedRanking, evalByResponseId, nameFor]
+    [sortedRanking, evalByResponseId, nameFor, rankingSaw]
   );
 
   /**
@@ -457,11 +476,6 @@ export default function ComparisonPage({
    * what it saw reads as out of date. Added and removed proposals are reported
    * separately, so only rows on both sides are compared here.
    */
-  const rankingSaw = useMemo(
-    () =>
-      comparison ? evaluationRevisionsOf(comparison.evaluation_revisions) : null,
-    [comparison]
-  );
   const evaluationsEditedSinceRanking = useMemo(() => {
     if (!comparison) return false;
     if (rankingSaw == null) return evaluations.length > 0;
@@ -480,6 +494,10 @@ export default function ComparisonPage({
    * still allowed to recommend anyone.
    */
   const orderChanged = useMemo(() => {
+    // Only an edit can have reordered anything. Without one, a live-score
+    // sort that differs from the ranking is the model's judgement against
+    // its own rounding, not a change.
+    if (!rankedVendors.some((v) => v.moved)) return false;
     const live = [...rankedVendors].sort((a, b) => (b.score ?? 0) - (a.score ?? 0));
     return live.some((v, i) => v.responseId !== rankedVendors[i]?.responseId);
   }, [rankedVendors]);

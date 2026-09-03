@@ -211,15 +211,23 @@ export function deriveStage({
  */
 export function reachedStages({
   hasRubric,
+  rubricAccepted,
   evaluationCount,
   hasRanking,
 }: {
   hasRubric: boolean;
+  /** See `StageInputs.rubricAccepted`. */
+  rubricAccepted: boolean;
   evaluationCount: number;
   hasRanking: boolean;
 }): Set<StageName> {
   const reached = new Set<StageName>(["rubric"]);
-  if (hasRubric) reached.add("responses");
+  // Nothing downstream is reachable until a human has signed off on the
+  // rubric. Regenerating it on a finished RFP resets that sign-off and leaves
+  // the old scores and ranking in place; offering them as links offered a way
+  // to re-score against a rubric nobody had read.
+  if (!hasRubric || !rubricAccepted) return reached;
+  reached.add("responses");
   if (evaluationCount > 0) reached.add("evaluations");
   if (hasRanking) reached.add("comparison");
   return reached;
@@ -296,16 +304,25 @@ function sameSet(a: string[], b: string[]): boolean {
  * reads as "no usable ranking", which the stage then reports as needing a
  * re-rank rather than as decided. Distinct matters: a ranking of `A, A, B`
  * mentions every proposal, and a set comparison would call it complete while
- * the page showed one vendor twice.
+ * the page showed one vendor twice. The ranks must form 1..n as well — `1, 1,
+ * 3` sorts into an order nobody assigned, and the screens present position
+ * as the model's judgement.
  */
 export function rankedResponseIdsOf(ranking: unknown): string[] | null {
   if (!Array.isArray(ranking)) return null;
   const ids: string[] = [];
+  const ranks: number[] = [];
   for (const entry of ranking) {
-    const id = (entry as { response_id?: unknown } | null)?.response_id;
+    const row = entry as { response_id?: unknown; rank?: unknown } | null;
+    const id = row?.response_id;
     if (typeof id !== "string" || ids.includes(id)) return null;
+    const rank = row?.rank;
+    if (typeof rank !== "number" || !Number.isInteger(rank)) return null;
     ids.push(id);
+    ranks.push(rank);
   }
+  ranks.sort((a, b) => a - b);
+  if (ranks.some((r, i) => r !== i + 1)) return null;
   return ids;
 }
 

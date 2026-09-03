@@ -99,7 +99,7 @@ export async function POST(request: NextRequest) {
   // Fetch rubric
   const { data: rubric } = await supabase
     .from("rubrics")
-    .select("criteria, updated_at")
+    .select("criteria, updated_at, edited_by_user")
     .eq("rfp_id", rfp_id)
     .single();
 
@@ -107,6 +107,14 @@ export async function POST(request: NextRequest) {
     return NextResponse.json(
       { error: "No rubric found" },
       { status: 400 }
+    );
+  }
+  // Same rule as scoring: the rubric a ranking is made against has to have
+  // been accepted by a human.
+  if (rubric.edited_by_user !== true) {
+    return NextResponse.json(
+      { error: "Review and accept the rubric before ranking against it." },
+      { status: 409 }
     );
   }
 
