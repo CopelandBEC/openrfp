@@ -557,7 +557,12 @@ export default function ComparisonPage({
 
     return {
       rfpTitle,
-      generatedAt: new Date(comparison.created_at).toLocaleDateString(
+      // The ranking's own date. A re-rank upserts the row, so `created_at`
+      // is when the first ranking ran and would date every later report to
+      // an order that no longer exists.
+      generatedAt: new Date(
+        comparison.updated_at ?? comparison.created_at
+      ).toLocaleDateString(
         undefined,
         { year: "numeric", month: "long", day: "numeric" }
       ),
