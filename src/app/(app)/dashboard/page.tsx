@@ -33,7 +33,7 @@ export default async function DashboardPage({
   const { data: rfps } = await supabase
     .from("rfps")
     .select(
-      "id, title, description, created_at, rubrics(edited_by_user), responses(count), evaluations(created_at), comparisons(created_at)"
+      "id, title, description, created_at, rubrics(edited_by_user), responses(count), evaluations(updated_at), comparisons(updated_at)"
     )
     .order("created_at", { ascending: false });
 
@@ -93,12 +93,13 @@ export default async function DashboardPage({
                   rfp.rubrics
                 );
                 const responseCount = embeddedCount(rfp.responses);
-                // Timestamps rather than a bare count, so a ranking that
-                // predates a score can be told apart from a current one.
+                // Update times, not creation times: an override edits an
+                // evaluation in place and a re-rank upserts the comparison, so
+                // neither creation time moves when the thing itself changes.
                 const evaluatedAt = (
-                  (rfp.evaluations ?? []) as { created_at: string }[]
-                ).map((e) => e.created_at);
-                const comparison = firstEmbedded<{ created_at: string }>(
+                  (rfp.evaluations ?? []) as { updated_at: string }[]
+                ).map((e) => e.updated_at);
+                const comparison = firstEmbedded<{ updated_at: string }>(
                   rfp.comparisons
                 );
                 return (
@@ -114,7 +115,7 @@ export default async function DashboardPage({
                         rubricAccepted: rubric?.edited_by_user === true,
                         responseCount,
                         evaluationCount: evaluatedAt.length,
-                        comparisonAt: comparison?.created_at ?? null,
+                        comparisonAt: comparison?.updated_at ?? null,
                         latestEvaluationAt: evaluatedAt.length
                           ? evaluatedAt.reduce((a, b) => (a > b ? a : b))
                           : null,

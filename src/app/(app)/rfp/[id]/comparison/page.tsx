@@ -73,6 +73,7 @@ interface Comparison {
   model_used?: string;
   prompt_version?: string;
   created_at: string;
+  updated_at?: string | null;
   interview_focus_areas?: string[];
 }
 
@@ -117,6 +118,7 @@ interface Evaluation {
   model_used: string;
   prompt_version: string;
   created_at: string;
+  updated_at: string | null;
 }
 
 interface Response {
@@ -388,6 +390,29 @@ export default function ComparisonPage({
   );
 
   /**
+   * Whether any evaluation has been written since the ranking was.
+   *
+   * This is the authoritative signal, and it supersedes comparing overall
+   * scores. Two offsetting criterion edits — one up, one down, same weighted
+   * effect — leave the overall identical, so `scoresMoved` cannot see them,
+   * while the exported criterion values no longer match the rationale and
+   * close calls the model wrote. The row's update time moved either way.
+   *
+   * Both sides must be `updated_at`: an override edits in place and a re-rank
+   * upserts, so neither creation time advances when the thing itself changes.
+   */
+  const evaluationsEditedSinceRanking = useMemo(() => {
+    const rankedAt = comparison?.updated_at ?? comparison?.created_at;
+    if (!rankedAt) return false;
+    return evaluations.some((e) => {
+      const editedAt = e.updated_at ?? e.created_at;
+      // A row written within a second of the ranking is the ranking's own
+      // input, not an edit to it.
+      return editedAt != null && editedAt > rankedAt;
+    });
+  }, [comparison, evaluations]);
+
+  /**
    * Whether live scores would put the field in a different order.
    *
    * This is the difference between "the numbers shifted a little" and "the
@@ -400,6 +425,7 @@ export default function ComparisonPage({
   }, [rankedVendors]);
 
   const rankingStale =
+    evaluationsEditedSinceRanking ||
     scoresMoved ||
     addedSinceRanking.length > 0 ||
     removedSinceRanking.length > 0;
@@ -429,9 +455,20 @@ export default function ComparisonPage({
       reasons.push("A changed score has reordered the field.");
     } else if (scoresMoved) {
       reasons.push("A score has changed, but the order still holds.");
+    } else if (evaluationsEditedSinceRanking) {
+      // The overall did not move, so say what did rather than nothing.
+      reasons.push(
+        "A criterion score was changed after this ranking without moving the total."
+      );
     }
     return reasons;
-  }, [addedSinceRanking, removedSinceRanking, orderChanged, scoresMoved]);
+  }, [
+    addedSinceRanking,
+    removedSinceRanking,
+    orderChanged,
+    scoresMoved,
+    evaluationsEditedSinceRanking,
+  ]);
 
   const winner = rankedVendors[0] ?? null;
   const runnerUp = rankedVendors[1] ?? null;

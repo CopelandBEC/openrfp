@@ -30,14 +30,23 @@ export interface StageInputs {
   rubricAccepted: boolean;
   responseCount: number;
   evaluationCount: number;
-  /** When the ranking was produced, or null if there isn't one. */
+  /**
+   * When the ranking was last written, or null if there isn't one.
+   *
+   * This has to be `updated_at`, not `created_at`. Re-ranking upserts the
+   * comparison row, which leaves the creation time alone, so a freshness check
+   * against `created_at` latched on "out of date" and no amount of re-ranking
+   * could clear it.
+   */
   comparisonAt: string | null;
   /**
-   * The newest evaluation's timestamp.
+   * When any evaluation was last written.
    *
-   * A comparison older than the newest score is a comparison that did not see
-   * it — a proposal added and scored after the ranking ran leaves the ranking
-   * in place but no longer describing the field.
+   * Also `updated_at`, and for a second reason: an override writes `scores`
+   * and `overall_score` in place, so nothing about the row's creation moves.
+   * Using the update time also catches the case an overall-score comparison
+   * cannot see at all — raising one criterion and lowering another by the same
+   * weighted amount leaves the total identical, but the row was still touched.
    */
   latestEvaluationAt: string | null;
 }

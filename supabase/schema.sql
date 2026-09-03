@@ -97,6 +97,29 @@ create table if not exists public.comparisons (
 alter table public.comparisons
   add column if not exists interview_focus_areas jsonb;
 
+-- Whether a ranking still describes the field cannot be answered from
+-- `created_at`. Re-ranking upserts this row, which leaves the creation time
+-- alone, and overriding a criterion updates `evaluations` without touching
+-- its creation time either — so a dashboard comparing the two would latch on
+-- "out of date" and never clear. These record when the row last actually
+-- changed, which is the question being asked.
+--
+-- Added without a default so existing rows can be backfilled from
+-- `created_at` rather than all reading as "changed just now"; the default and
+-- the not-null go on afterwards. Re-running this file is a no-op: the not-null
+-- means the backfill matches nothing the second time.
+alter table public.evaluations
+  add column if not exists updated_at timestamptz;
+update public.evaluations set updated_at = coalesce(created_at, now()) where updated_at is null;
+alter table public.evaluations alter column updated_at set default now();
+alter table public.evaluations alter column updated_at set not null;
+
+alter table public.comparisons
+  add column if not exists updated_at timestamptz;
+update public.comparisons set updated_at = coalesce(created_at, now()) where updated_at is null;
+alter table public.comparisons alter column updated_at set default now();
+alter table public.comparisons alter column updated_at set not null;
+
 -- ============================================
 -- Audit Log
 -- ============================================
@@ -308,6 +331,17 @@ $$;
 drop trigger if exists rfps_touch_updated_at on public.rfps;
 create trigger rfps_touch_updated_at
   before update on public.rfps
+  for each row execute function public.touch_updated_at();
+
+-- Same function, for the two tables whose freshness the dashboard compares.
+drop trigger if exists evaluations_touch_updated_at on public.evaluations;
+create trigger evaluations_touch_updated_at
+  before update on public.evaluations
+  for each row execute function public.touch_updated_at();
+
+drop trigger if exists comparisons_touch_updated_at on public.comparisons;
+create trigger comparisons_touch_updated_at
+  before update on public.comparisons
   for each row execute function public.touch_updated_at();
 
 -- ============================================

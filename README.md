@@ -69,6 +69,16 @@ that signs up can spend your provider budget.
 `schema.sql` is idempotent — re-run the whole file to pick up schema or policy
 changes without recreating the project.
 
+**Re-run `schema.sql` before deploying the version that added `updated_at` to
+`evaluations` and `comparisons`, not after.** The dashboard reads those columns
+to tell a current ranking from one that predates a score, and PostgREST
+rejects the whole query when a selected column is missing — so until the
+migration is applied the dashboard renders its empty state and the owner's RFPs
+appear to have vanished. Nothing is lost and applying the schema restores them,
+but it is an alarming few minutes. The backfill sets `updated_at` from
+`created_at`, so existing rows read as last changed when they were made rather
+than all reading as "changed just now".
+
 **Upgrading from a version without guest mode? Re-run `schema.sql` before you
 deploy the new code, not after.** The AI routes now reserve every call through
 `reserve_ai_call` and fail closed, so until that function exists every rubric,
