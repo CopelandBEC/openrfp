@@ -31,6 +31,7 @@ import { ScoreBar } from "@/components/viz/score-bar";
 import { TierChip } from "@/components/viz/tier-chip";
 import { ScoreGrid } from "@/components/viz/score-grid";
 import { formatScore, scoreTier, toPercent } from "@/lib/score";
+import { scoredAgainstCurrentRubric } from "@/lib/stage";
 import {
   exportCsv,
   exportJson,
@@ -95,6 +96,8 @@ interface Rubric {
   edited_by_user: boolean;
   locked: boolean;
   created_at: string;
+  /** When the criteria last changed. */
+  updated_at?: string | null;
 }
 
 interface ScoreEntry {
@@ -119,6 +122,8 @@ interface Evaluation {
   prompt_version: string;
   created_at: string;
   updated_at: string | null;
+  /** The rubric these scores were made against; see lib/stage.ts. */
+  rubric_updated_at?: string | null;
 }
 
 interface Response {
@@ -424,7 +429,29 @@ export default function ComparisonPage({
     return live.some((v, i) => v.responseId !== rankedVendors[i]?.responseId);
   }, [rankedVendors]);
 
+  /**
+   * Scored proposals whose scores were made against an earlier rubric.
+   *
+   * The other checks on this page compare the ranking with the scores. This
+   * one is a level down: a rubric edited after scoring leaves the scores
+   * themselves describing criteria that no longer exist, and no re-rank fixes
+   * that — the proposals have to be scored again first.
+   */
+  const scoredAgainstOldRubric = useMemo(
+    () =>
+      evaluatedResponses.filter((r) => {
+        const evaluation = evalByResponseId.get(r.id);
+        return !scoredAgainstCurrentRubric(
+          evaluation?.rubric_updated_at,
+          rubric?.updated_at
+        );
+      }),
+    [evaluatedResponses, evalByResponseId, rubric]
+  );
+  const rubricChangedSinceScoring = scoredAgainstOldRubric.length > 0;
+
   const rankingStale =
+    rubricChangedSinceScoring ||
     evaluationsEditedSinceRanking ||
     scoresMoved ||
     addedSinceRanking.length > 0 ||
@@ -433,6 +460,15 @@ export default function ComparisonPage({
   /** Said in one line each, on the page and in the exported report. */
   const stalenessReasons = useMemo(() => {
     const reasons: string[] = [];
+    if (scoredAgainstOldRubric.length > 0) {
+      reasons.push(
+        `The rubric changed after ${scoredAgainstOldRubric.length} proposal${
+          scoredAgainstOldRubric.length === 1 ? " was" : "s were"
+        } scored: ${scoredAgainstOldRubric
+          .map((r) => r.vendor_name)
+          .join(", ")}.`
+      );
+    }
     if (addedSinceRanking.length > 0) {
       reasons.push(
         `${addedSinceRanking.length} proposal${
@@ -463,6 +499,7 @@ export default function ComparisonPage({
     }
     return reasons;
   }, [
+    scoredAgainstOldRubric,
     addedSinceRanking,
     removedSinceRanking,
     orderChanged,
@@ -726,20 +763,30 @@ export default function ComparisonPage({
                     <span className="font-medium">
                       This ranking is out of date.
                     </span>{" "}
-                    The scores below are current; the order is the one the model
-                    gave before the change.
+                    {rubricChangedSinceScoring
+                      ? "Some scores below were made against an earlier rubric, so they need scoring again before a re-rank means anything."
+                      : "The scores below are current; the order is the one the model gave before the change."}
                     <span className="mt-1.5 block text-muted-foreground">
                       {stalenessReasons.join(" ")}
                     </span>
                   </span>
                 </p>
-                <Button
-                  size="sm"
-                  onClick={generateComparison}
-                  disabled={generating}
-                >
-                  {generating ? "Re-ranking…" : "Re-rank"}
-                </Button>
+                {rubricChangedSinceScoring ? (
+                  <Button
+                    size="sm"
+                    render={<Link href={`/rfp/${id}/responses`} />}
+                  >
+                    Re-score proposals
+                  </Button>
+                ) : (
+                  <Button
+                    size="sm"
+                    onClick={generateComparison}
+                    disabled={generating}
+                  >
+                    {generating ? "Re-ranking…" : "Re-rank"}
+                  </Button>
+                )}
               </div>
             )}
 

@@ -30,12 +30,24 @@ export interface StageInputs {
   rubricAccepted: boolean;
   responseCount: number;
   /**
-   * The `response_id` of every scored proposal.
+   * Every scored proposal: which response it scores, and which rubric it was
+   * scored against, as that rubric's `updated_at`.
    *
    * Ids rather than a count, because a saved ranking is a snapshot of a set,
-   * and a count cannot tell one set from another of the same size.
+   * and a count cannot tell one set from another of the same size. The rubric
+   * stamp is recorded at scoring time by the evaluate route; see
+   * `scoredAgainstCurrentRubric`.
    */
-  evaluatedResponseIds: string[];
+  evaluations: ScoredProposal[];
+  /**
+   * When the rubric's criteria last changed, or null if there is no rubric.
+   *
+   * Scores are made against a rubric, so a rubric edited after scoring leaves
+   * every score describing criteria and weights that no longer exist, and
+   * the ranking built on them along with it. `rubrics.updated_at` moves only
+   * when `criteria` change — accepting a rubric unchanged does not count.
+   */
+  rubricUpdatedAt: string | null;
   /**
    * When the ranking was last written, or null if there isn't one.
    *
@@ -69,6 +81,12 @@ export interface StageInputs {
   rankedResponseIds: string[] | null;
 }
 
+export interface ScoredProposal {
+  responseId: string;
+  /** The `rubrics.updated_at` the scores were produced against. */
+  rubricUpdatedAt: string | null;
+}
+
 export interface Stage {
   /** 1-4, for the progress pips. */
   step: number;
@@ -86,7 +104,8 @@ export function deriveStage({
   hasRubric,
   rubricAccepted,
   responseCount,
-  evaluatedResponseIds,
+  evaluations,
+  rubricUpdatedAt,
   comparisonAt,
   latestEvaluationAt,
   rankedResponseIds,
@@ -116,8 +135,23 @@ export function deriveStage({
       done: false,
     };
   }
-  if (evaluatedResponseIds.length < responseCount) {
+  if (evaluations.length < responseCount) {
     return { step: 2, label: "Needs scoring", next: "responses", done: false };
+  }
+  // Scored, but against a rubric that has since changed. The scores describe
+  // criteria that no longer exist, so this is a scoring problem before it is
+  // a ranking one, and the proposals screen is where re-scoring happens.
+  if (
+    !evaluations.every((e) =>
+      scoredAgainstCurrentRubric(e.rubricUpdatedAt, rubricUpdatedAt)
+    )
+  ) {
+    return {
+      step: 2,
+      label: "Rubric changed — re-score",
+      next: "responses",
+      done: false,
+    };
   }
   // Everything upstream is satisfied, so a ranking that has seen every score
   // is the finished article. One that predates a score has not, and neither
@@ -128,7 +162,10 @@ export function deriveStage({
     comparisonAt != null &&
     (latestEvaluationAt == null || latestEvaluationAt <= comparisonAt) &&
     rankedResponseIds != null &&
-    sameSet(rankedResponseIds, evaluatedResponseIds);
+    sameSet(
+      rankedResponseIds,
+      evaluations.map((e) => e.responseId)
+    );
   if (comparisonIsCurrent) {
     return { step: 4, label: "Decided", next: "comparison", done: true };
   }
@@ -138,6 +175,33 @@ export function deriveStage({
     next: "evaluations",
     done: false,
   };
+}
+
+/**
+ * Whether an evaluation's scores were made against the rubric as it is now.
+ *
+ * `evaluationRubricAt` is the `rubrics.updated_at` the scoring route read
+ * when it produced the scores; `rubricUpdatedAt` is that column now. They
+ * are the same instant, or the rubric has changed in between. Compared as
+ * instants rather than strings so a difference in rendering cannot read as a
+ * difference in time.
+ *
+ * A rubric with no `updated_at` at all is the pre-migration schema, where the
+ * question cannot be answered; that reads as current rather than sending
+ * every owner to re-score everything. An evaluation with no stamp under a
+ * rubric that has one is of unknown provenance, and reads as stale.
+ */
+export function scoredAgainstCurrentRubric(
+  evaluationRubricAt: string | null | undefined,
+  rubricUpdatedAt: string | null | undefined
+): boolean {
+  if (rubricUpdatedAt == null) return true;
+  if (evaluationRubricAt == null) return false;
+  const a = Date.parse(evaluationRubricAt);
+  const b = Date.parse(rubricUpdatedAt);
+  return Number.isFinite(a) && Number.isFinite(b)
+    ? a === b
+    : evaluationRubricAt === rubricUpdatedAt;
 }
 
 function sameSet(a: string[], b: string[]): boolean {

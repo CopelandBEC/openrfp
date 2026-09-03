@@ -120,6 +120,32 @@ update public.comparisons set updated_at = coalesce(created_at, now()) where upd
 alter table public.comparisons alter column updated_at set default now();
 alter table public.comparisons alter column updated_at set not null;
 
+-- When the rubric's criteria last changed — not when its row was last
+-- written. Accepting a rubric flips `edited_by_user` and rewrites `criteria`
+-- unchanged, and that must not read as a change every score was made
+-- against, so the trigger below fires only when `criteria` actually differ.
+alter table public.rubrics
+  add column if not exists updated_at timestamptz;
+update public.rubrics set updated_at = coalesce(created_at, now()) where updated_at is null;
+alter table public.rubrics alter column updated_at set default now();
+alter table public.rubrics alter column updated_at set not null;
+
+-- Which rubric an evaluation was scored against, as that rubric's
+-- `updated_at`, recorded by the scoring route at the time. A fact rather
+-- than an inference: comparing the evaluation's own update time with the
+-- rubric's would call an evaluation current the moment one criterion was
+-- overridden, though every other score in it still came from the old rubric.
+--
+-- Backfilled from the current rubric, so rows scored before this column
+-- existed read as current. That is the best available answer for them; the
+-- alternative is asking every existing owner to re-score everything.
+alter table public.evaluations
+  add column if not exists rubric_updated_at timestamptz;
+update public.evaluations e
+  set rubric_updated_at = r.updated_at
+  from public.rubrics r
+  where r.rfp_id = e.rfp_id and e.rubric_updated_at is null;
+
 -- ============================================
 -- Audit Log
 -- ============================================
@@ -343,6 +369,14 @@ drop trigger if exists comparisons_touch_updated_at on public.comparisons;
 create trigger comparisons_touch_updated_at
   before update on public.comparisons
   for each row execute function public.touch_updated_at();
+
+-- Rubrics only when the criteria change: see the column's note above.
+drop trigger if exists rubrics_touch_updated_at on public.rubrics;
+create trigger rubrics_touch_updated_at
+  before update on public.rubrics
+  for each row
+  when (old.criteria is distinct from new.criteria)
+  execute function public.touch_updated_at();
 
 -- ============================================
 -- Storage bucket for RFP and response files

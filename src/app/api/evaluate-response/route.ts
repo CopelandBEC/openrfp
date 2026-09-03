@@ -65,9 +65,12 @@ export async function POST(request: NextRequest) {
   }
 
   // Fetch rubric
+  // `updated_at` is when the criteria last changed; it is stamped onto the
+  // evaluation so every screen can tell scores made against this rubric from
+  // scores made against an earlier one.
   const { data: rubric } = await supabase
     .from("rubrics")
-    .select("criteria")
+    .select("criteria, updated_at")
     .eq("rfp_id", responseRecord.rfp_id)
     .single();
 
@@ -173,6 +176,7 @@ export async function POST(request: NextRequest) {
           weaknesses: evaluation.weaknesses,
           model_used: model,
           prompt_version: PROMPT_VERSION,
+          rubric_updated_at: rubric.updated_at,
         },
         { onConflict: "response_id" }
       )

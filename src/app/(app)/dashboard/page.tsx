@@ -42,7 +42,7 @@ export default async function DashboardPage({
   const { data: rfps, error: loadError } = await supabase
     .from("rfps")
     .select(
-      "id, title, description, created_at, rubrics(edited_by_user), responses(count), evaluations(response_id, updated_at), comparisons(updated_at, ranking)"
+      "id, title, description, created_at, rubrics(edited_by_user, updated_at), responses(count), evaluations(response_id, updated_at, rubric_updated_at), comparisons(updated_at, ranking)"
     )
     .order("created_at", { ascending: false });
 
@@ -120,9 +120,10 @@ export default async function DashboardPage({
           ) : rfps && rfps.length > 0 ? (
             <div className="grid gap-4">
               {rfps.map((rfp) => {
-                const rubric = firstEmbedded<{ edited_by_user: boolean }>(
-                  rfp.rubrics
-                );
+                const rubric = firstEmbedded<{
+                  edited_by_user: boolean;
+                  updated_at: string | null;
+                }>(rfp.rubrics);
                 const responseCount = embeddedCount(rfp.responses);
                 // Update times, not creation times: an override edits an
                 // evaluation in place and a re-rank upserts the comparison, so
@@ -130,6 +131,7 @@ export default async function DashboardPage({
                 const evaluations = (rfp.evaluations ?? []) as {
                   response_id: string;
                   updated_at: string;
+                  rubric_updated_at: string | null;
                 }[];
                 const evaluatedAt = evaluations.map((e) => e.updated_at);
                 const comparison = firstEmbedded<{
@@ -148,9 +150,11 @@ export default async function DashboardPage({
                         hasRubric: rubric != null,
                         rubricAccepted: rubric?.edited_by_user === true,
                         responseCount,
-                        evaluatedResponseIds: evaluations.map(
-                          (e) => e.response_id
-                        ),
+                        evaluations: evaluations.map((e) => ({
+                          responseId: e.response_id,
+                          rubricUpdatedAt: e.rubric_updated_at,
+                        })),
+                        rubricUpdatedAt: rubric?.updated_at ?? null,
                         comparisonAt: comparison?.updated_at ?? null,
                         latestEvaluationAt: evaluatedAt.length
                           ? evaluatedAt.reduce((a, b) => (a > b ? a : b))

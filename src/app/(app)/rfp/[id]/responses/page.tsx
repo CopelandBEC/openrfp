@@ -7,6 +7,7 @@ import {
   FileTextIcon,
   ScanTextIcon,
   Trash2Icon,
+  TriangleAlertIcon,
   UploadIcon,
 } from "lucide-react";
 import { createClient } from "@/lib/supabase/client";
@@ -15,6 +16,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { AppHeader, PageIntro } from "@/components/app-shell";
 import { EmptyState, ErrorState } from "@/components/stage-state";
+import { scoredAgainstCurrentRubric } from "@/lib/stage";
 import { cn } from "@/lib/utils";
 
 // ---------------------------------------------------------------------------
@@ -125,6 +127,15 @@ export default function ResponsesPage({
   const [evalProgress, setEvalProgress] = useState("");
   const [error, setError] = useState("");
   const [dragActive, setDragActive] = useState(false);
+  /**
+   * Which rubric each existing score was made against, by response id, and
+   * when the rubric's criteria last changed. Together they say whether a
+   * scored proposal is actually scored against the rubric as it is now.
+   */
+  const [scoredAgainst, setScoredAgainst] = useState<
+    Map<string, string | null>
+  >(new Map());
+  const [rubricUpdatedAt, setRubricUpdatedAt] = useState<string | null>(null);
 
   // -----------------------------------------------------------------------
   // Data fetching
@@ -135,21 +146,49 @@ export default function ResponsesPage({
   // `error` already mount in the right state.
   const fetchResponses = useCallback(async () => {
     try {
-      const { data, error: queryError } = await supabase
-        .from("responses")
-        .select(
-          "id, rfp_id, vendor_name, file_path, extracted_text, ocr_status, page_count, status, created_at"
+      const [responsesRes, evaluationsRes, rubricRes] = await Promise.all([
+        supabase
+          .from("responses")
+          .select(
+            "id, rfp_id, vendor_name, file_path, extracted_text, ocr_status, page_count, status, created_at"
+          )
+          .eq("rfp_id", id)
+          .order("created_at", { ascending: true }),
+        // A rubric edited after scoring has to show up here as scoring left
+        // to do, not as "every proposal is scored" — `responses.status`
+        // cannot tell the two apart.
+        supabase
+          .from("evaluations")
+          .select("response_id, rubric_updated_at")
+          .eq("rfp_id", id),
+        supabase
+          .from("rubrics")
+          .select("updated_at")
+          .eq("rfp_id", id)
+          .maybeSingle(),
+      ]);
+
+      if (responsesRes.error) throw new Error(responsesRes.error.message);
+      if (evaluationsRes.error) throw new Error(evaluationsRes.error.message);
+      if (rubricRes.error) throw new Error(rubricRes.error.message);
+
+      if (responsesRes.data) {
+        setResponses(responsesRes.data as Response[]);
+      }
+      setScoredAgainst(
+        new Map(
+          (
+            (evaluationsRes.data ?? []) as {
+              response_id: string;
+              rubric_updated_at: string | null;
+            }[]
+          ).map((ev) => [ev.response_id, ev.rubric_updated_at])
         )
-        .eq("rfp_id", id)
-        .order("created_at", { ascending: true });
-
-      if (queryError) {
-        throw new Error(queryError.message);
-      }
-
-      if (data) {
-        setResponses(data as Response[]);
-      }
+      );
+      setRubricUpdatedAt(
+        (rubricRes.data as { updated_at?: string | null } | null)?.updated_at ??
+          null
+      );
       setError("");
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to load responses");
@@ -299,16 +338,31 @@ export default function ResponsesPage({
   // Evaluate All
   // -----------------------------------------------------------------------
 
+  /**
+   * Scored, but against a rubric that has changed since. The scores describe
+   * criteria and weights that no longer exist, so the proposal goes back in
+   * the queue as if it had never been scored.
+   */
+  const staleAgainstRubric = useCallback(
+    (r: Response) =>
+      r.status === "evaluated" &&
+      scoredAgainst.has(r.id) &&
+      !scoredAgainstCurrentRubric(scoredAgainst.get(r.id), rubricUpdatedAt),
+    [scoredAgainst, rubricUpdatedAt]
+  );
+
   const pendingOrErrorResponses = responses.filter(
     (r) => r.status === "pending" || r.status === "error"
   );
+  const needsRescoring = responses.filter(staleAgainstRubric);
+  const toScore = [...pendingOrErrorResponses, ...needsRescoring];
 
   const allEvaluated =
     responses.length > 0 &&
-    responses.every((r) => r.status === "evaluated");
+    responses.every((r) => r.status === "evaluated") &&
+    needsRescoring.length === 0;
 
-  const canEvaluate =
-    responses.length > 0 && pendingOrErrorResponses.length > 0 && !evaluating;
+  const canEvaluate = responses.length > 0 && toScore.length > 0 && !evaluating;
 
   const handleEvaluateAll = useCallback(async () => {
     if (!canEvaluate) return;
@@ -316,7 +370,8 @@ export default function ResponsesPage({
     setError("");
 
     const toEvaluate = responses.filter(
-      (r) => r.status === "pending" || r.status === "error"
+      (r) =>
+        r.status === "pending" || r.status === "error" || staleAgainstRubric(r)
     );
 
     let successCount = 0;
@@ -349,11 +404,15 @@ export default function ResponsesPage({
           );
         }
 
-        // Set status to evaluated in local state
+        // Set status to evaluated in local state, and scored against the
+        // rubric as it is now.
         setResponses((prev) =>
           prev.map((r) =>
             r.id === response.id ? { ...r, status: "evaluated" } : r
           )
+        );
+        setScoredAgainst((prev) =>
+          new Map(prev).set(response.id, rubricUpdatedAt)
         );
 
         successCount++;
@@ -409,7 +468,7 @@ export default function ResponsesPage({
     if (successCount > 0 && errorCount === 0) {
       router.push(`/rfp/${id}/evaluations`);
     }
-  }, [canEvaluate, responses, router, id]);
+  }, [canEvaluate, responses, staleAgainstRubric, rubricUpdatedAt, router, id]);
 
   // -----------------------------------------------------------------------
   // Render
@@ -551,6 +610,30 @@ export default function ResponsesPage({
               {responses.length === 1 ? "proposal" : "proposals"}
             </h2>
 
+            {needsRescoring.length > 0 && (
+              <div
+                role="note"
+                className="mt-3 flex gap-2 rounded-lg bg-muted px-4 py-3 text-sm text-foreground"
+              >
+                <TriangleAlertIcon
+                  className="mt-0.5 size-4 shrink-0"
+                  style={{ color: "var(--status-warning)" }}
+                  aria-hidden="true"
+                />
+                <p>
+                  <span className="font-medium">
+                    The rubric changed after scoring.
+                  </span>{" "}
+                  {needsRescoring.length === 1
+                    ? "One proposal was scored"
+                    : `${needsRescoring.length} proposals were scored`}{" "}
+                  against criteria that are no longer in it:{" "}
+                  {needsRescoring.map((r) => r.vendor_name).join(", ")}. Score
+                  them again to bring them up to date.
+                </p>
+              </div>
+            )}
+
             <ul className="mt-3 divide-y divide-border/60 rounded-xl bg-card ring-1 ring-foreground/10">
               {responses.map((response, index) => (
                 <li
@@ -565,6 +648,14 @@ export default function ResponsesPage({
                       </p>
                       <div className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-1">
                         <StatusDot status={response.status} />
+                        {staleAgainstRubric(response) && (
+                          <span
+                            className="text-xs font-medium"
+                            style={{ color: "var(--status-warning)" }}
+                          >
+                            Rubric changed since
+                          </span>
+                        )}
                         {response.page_count > 0 && (
                           <span className="text-xs text-muted-foreground">
                             {response.page_count} page
@@ -627,7 +718,9 @@ export default function ResponsesPage({
                       `Scoring up to ${EVALUATION_CONCURRENCY} at a time…`
                     : allEvaluated
                       ? "Every proposal is scored."
-                      : `${pendingOrErrorResponses.length} waiting to be scored.`}
+                      : needsRescoring.length > 0
+                        ? `${toScore.length} to score against the current rubric.`
+                        : `${pendingOrErrorResponses.length} waiting to be scored.`}
                 </p>
                 {allEvaluated && !evaluating ? (
                   <Button
@@ -645,8 +738,10 @@ export default function ResponsesPage({
                   >
                     {evaluating
                       ? "Scoring…"
-                      : `Score ${pendingOrErrorResponses.length} proposal${
-                          pendingOrErrorResponses.length !== 1 ? "s" : ""
+                      : `${
+                          pendingOrErrorResponses.length === 0 ? "Re-score" : "Score"
+                        } ${toScore.length} proposal${
+                          toScore.length !== 1 ? "s" : ""
                         }`}
                   </Button>
                 )}

@@ -8,6 +8,7 @@ import {
   PlusIcon,
   QuoteIcon,
   SlidersHorizontalIcon,
+  TriangleAlertIcon,
 } from "lucide-react";
 import { createClient } from "@/lib/supabase/client";
 import { Button } from "@/components/ui/button";
@@ -31,6 +32,7 @@ import { ScoreMeter } from "@/components/viz/score-meter";
 import { ScoreBar } from "@/components/viz/score-bar";
 import { TierChip } from "@/components/viz/tier-chip";
 import { formatScore, scoreTier, toPercent } from "@/lib/score";
+import { scoredAgainstCurrentRubric } from "@/lib/stage";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -63,6 +65,8 @@ interface Rubric {
   edited_by_user: boolean;
   locked: boolean;
   created_at: string;
+  /** When the criteria last changed. */
+  updated_at?: string | null;
 }
 
 interface Evaluation {
@@ -77,6 +81,8 @@ interface Evaluation {
   model_used: string | null;
   prompt_version: string | null;
   created_at: string;
+  /** The rubric these scores were made against; see lib/stage.ts. */
+  rubric_updated_at?: string | null;
 }
 
 interface VendorResponse {
@@ -445,7 +451,7 @@ export default function EvaluationsPage({
         supabase
           .from("evaluations")
           .select(
-            "id, response_id, rfp_id, scores, overall_score, summary, strengths, weaknesses, model_used, prompt_version, created_at"
+            "id, response_id, rfp_id, scores, overall_score, summary, strengths, weaknesses, model_used, prompt_version, created_at, rubric_updated_at"
           )
           .eq("rfp_id", id)
           .order("created_at", { ascending: true }),
@@ -457,7 +463,7 @@ export default function EvaluationsPage({
         supabase
           .from("rubrics")
           .select(
-            "id, rfp_id, criteria, ai_generated, edited_by_user, locked, created_at"
+            "id, rfp_id, criteria, ai_generated, edited_by_user, locked, created_at, updated_at"
           )
           .eq("rfp_id", id)
           .order("created_at", { ascending: false })
@@ -570,6 +576,21 @@ export default function EvaluationsPage({
   // Memoised because `weakSpotsFor` closes over it: a fresh [] each render
   // would rebuild that callback on every keystroke in an override field.
   const criteria = useMemo(() => rubric?.criteria ?? [], [rubric]);
+
+  /**
+   * Vendors whose scores were made against an earlier rubric. Those scores
+   * and the quotes behind them describe criteria that may no longer exist,
+   * so the page says so before showing them.
+   */
+  const scoredAgainstOldRubric = useMemo(() => {
+    const nameFor = new Map(responses.map((r) => [r.id, r.vendor_name]));
+    return evaluations
+      .filter(
+        (ev) =>
+          !scoredAgainstCurrentRubric(ev.rubric_updated_at, rubric?.updated_at)
+      )
+      .map((ev) => nameFor.get(ev.response_id) ?? "Unknown vendor");
+  }, [evaluations, responses, rubric]);
   const hasEvaluations = evaluations.length > 0;
   const showCompareButton = evaluations.length >= 2;
 
@@ -628,6 +649,36 @@ export default function EvaluationsPage({
             {error && (
               <div className="mt-6">
                 <ErrorState message={error} />
+              </div>
+            )}
+
+            {scoredAgainstOldRubric.length > 0 && (
+              <div
+                role="note"
+                className="mt-6 flex flex-wrap items-center justify-between gap-3 rounded-lg bg-muted px-4 py-3"
+              >
+                <p className="flex items-start gap-2 text-sm text-foreground">
+                  <TriangleAlertIcon
+                    className="mt-0.5 size-4 shrink-0"
+                    style={{ color: "var(--status-warning)" }}
+                    aria-hidden="true"
+                  />
+                  <span>
+                    <span className="font-medium">
+                      The rubric changed after scoring.
+                    </span>{" "}
+                    {scoredAgainstOldRubric.join(", ")}{" "}
+                    {scoredAgainstOldRubric.length === 1 ? "was" : "were"} scored
+                    against earlier criteria, so the scores and quotes below may
+                    not line up with the rubric as it is now.
+                  </span>
+                </p>
+                <Button
+                  size="sm"
+                  render={<Link href={`/rfp/${id}/responses`} />}
+                >
+                  Re-score proposals
+                </Button>
               </div>
             )}
 
