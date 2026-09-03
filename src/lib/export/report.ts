@@ -128,7 +128,7 @@ export function exportCsv(data: ReportData) {
     "Vendor",
     "Overall score",
     "Verdict",
-    ...data.criteria.map((c) => `${c.name} (${c.weight}%)`),
+    ...data.criteria.map((c) => `${c.name} (${num(c.weight)}%)`),
     "Why this rank",
     "Strengths",
     "Weaknesses",
@@ -186,6 +186,26 @@ function esc(value: string | number | null | undefined): string {
     .replace(/>/g, "&gt;")
     .replace(/"/g, "&quot;")
     .replace(/'/g, "&#39;");
+}
+
+/**
+ * Render a number that arrived as JSON, as a number.
+ *
+ * `criteria` and `ranking` are stored exactly as the model emitted them —
+ * `parseModelJson` output straight into a jsonb column — so a field this
+ * codebase types as `number` is only a number by convention. The types are a
+ * compile-time claim about runtime data nobody validated.
+ *
+ * That matters here and nowhere else in the app: React escapes interpolated
+ * values, so a stray string is merely ugly in the UI, but this module builds
+ * HTML by concatenation. A weight of `<img src=x onerror=…>` would be live
+ * markup in a report someone emails to a selection committee, and the RFP that
+ * shaped the model's answer came from outside. Coercing is stricter than
+ * escaping: it enforces the type the rest of the code already assumes.
+ */
+function num(value: unknown, fallback = 0): number {
+  const n = typeof value === "number" ? value : Number(value);
+  return Number.isFinite(n) ? n : fallback;
 }
 
 /**
@@ -408,9 +428,9 @@ function scoreGridHtml(data: ReportData): string {
           )}</td>`;
         })
         .join("");
-      return `<tr><th class="row-head">${esc(criterion.name)} <span style="font-weight:400">${
+      return `<tr><th class="row-head">${esc(criterion.name)} <span style="font-weight:400">${num(
         criterion.weight
-      }%</span></th>${cells}</tr>`;
+      )}%</span></th>${cells}</tr>`;
     })
     .join("");
   const legend = BINS.map(
@@ -470,7 +490,7 @@ function vendorDetailHtml(vendor: ReportVendor, data: ReportData): string {
     <details>
       <summary>${esc(vendor.vendorName)} — ${esc(
         formatScore(vendor.overallScore)
-      )}/100${vendor.rank ? ` · rank ${vendor.rank}` : ""}</summary>
+      )}/100${vendor.rank ? ` · rank ${num(vendor.rank)}` : ""}</summary>
       <div class="body">
         ${vendor.summary ? `<p>${esc(vendor.summary)}</p>` : ""}
         ${findings}
@@ -546,7 +566,7 @@ export function buildReportHtml(data: ReportData): string {
     .map(
       (vendor) => `
       <div class="rank-row">
-        <span class="rank-no">${vendor.rank ?? "—"}</span>
+        <span class="rank-no">${vendor.rank == null ? "—" : num(vendor.rank)}</span>
         <span class="rank-name">${esc(vendor.vendorName)}</span>
         ${bar(vendor.overallScore ?? 0)}
         <span class="rank-value">${esc(formatScore(vendor.overallScore))}</span>

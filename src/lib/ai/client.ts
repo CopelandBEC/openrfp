@@ -78,11 +78,23 @@ export function getReasoningEffort(task: AITask): ReasoningEffort | undefined {
  * Pair this with `prompt_cache_key` in the request body — the header routes the
  * request, the body field names the cache entry. Providers that implement
  * neither ignore both.
+ *
+ * The key is sanitised because it becomes an HTTP header value and, in
+ * compare-responses, originates in the request body. Nothing exploitable
+ * reaches here today: an id with a newline in it fails the uuid comparison in
+ * the ownership check long before this, and undici rejects CRLF in a header
+ * value regardless. But both of those are somebody else's guarantee, and the
+ * one place that can cheaply not depend on them is here.
  */
 export function cacheAffinityOptions(key: string): {
   headers: Record<string, string>;
 } {
-  return { headers: { "x-session-affinity": key } };
+  const safe = key.replace(/[^A-Za-z0-9._:-]/g, "").slice(0, 128);
+  // An unusable key is better dropped than sent: affinity is an optimisation,
+  // and a partial key would route to the wrong replica rather than no replica.
+  return safe.length === key.length && safe.length > 0
+    ? { headers: { "x-session-affinity": safe } }
+    : { headers: {} };
 }
 
 /**
