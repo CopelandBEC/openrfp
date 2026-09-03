@@ -679,6 +679,21 @@ export default function ComparisonPage({
             notes={COMPARISON_NOTES}
             expected="15–45 seconds"
           />
+        ) : !comparison && evaluations.length < 2 && !needsScoringFirst ? (
+          // The same threshold as the evaluations screen and the API: one
+          // proposal is nothing to rank against.
+          <EmptyState
+            title="Nothing to compare yet"
+            action={
+              <Button render={<Link href={`/rfp/${id}/responses`} />}>
+                Add another proposal
+              </Button>
+            }
+          >
+            A ranking needs at least two scored proposals. Add and score a
+            second one, and this step ranks them against the weighted rubric
+            and writes up what to ask at interview.
+          </EmptyState>
         ) : !comparison ? (
           <EmptyState
             title={needsScoringFirst ? "Not ready to rank" : "Ready to rank"}

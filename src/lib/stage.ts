@@ -161,6 +161,19 @@ export function deriveStage({
       done: false,
     };
   }
+  // A ranking needs something to rank against. With one proposal there is no
+  // comparison to make and the evaluations screen offers no way on to the
+  // decision, so say what is actually missing rather than "Ready to rank".
+  // A ranking that already exists for a single proposal is left to the checks
+  // below, which describe it as it is.
+  if (responseCount < 2 && !hasRanking) {
+    return {
+      step: 2,
+      label: "Needs a second proposal",
+      next: "responses",
+      done: false,
+    };
+  }
   // Everything upstream is satisfied, so a ranking that has seen every score
   // is the finished article. One that predates a score has not, and neither
   // has one whose set of vendors is not the set that is scored now: a

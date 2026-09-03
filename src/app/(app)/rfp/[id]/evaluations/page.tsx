@@ -81,6 +81,8 @@ interface Evaluation {
   model_used: string | null;
   prompt_version: string | null;
   created_at: string;
+  /** Last written: a re-score or an override. Re-scoring upserts the row. */
+  updated_at?: string | null;
   /** The rubric these scores were made against; see lib/stage.ts. */
   rubric_updated_at?: string | null;
 }
@@ -451,7 +453,7 @@ export default function EvaluationsPage({
         supabase
           .from("evaluations")
           .select(
-            "id, response_id, rfp_id, scores, overall_score, summary, strengths, weaknesses, model_used, prompt_version, created_at, rubric_updated_at"
+            "id, response_id, rfp_id, scores, overall_score, summary, strengths, weaknesses, model_used, prompt_version, created_at, updated_at, rubric_updated_at"
           )
           .eq("rfp_id", id)
           .order("created_at", { ascending: true }),
@@ -823,10 +825,14 @@ export default function EvaluationsPage({
                                 </dd>
                               </>
                             )}
-                            <dt>Scored</dt>
+                            {/* Re-scoring upserts the row, so `created_at`
+                                is the first score's time for ever; the update
+                                time is when these numbers were last written,
+                                by the model or by hand. */}
+                            <dt>Last scored or edited</dt>
                             <dd className="text-foreground">
                               {new Date(
-                                evaluation.created_at
+                                evaluation.updated_at ?? evaluation.created_at
                               ).toLocaleString()}
                             </dd>
                           </dl>

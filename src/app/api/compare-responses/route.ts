@@ -163,6 +163,14 @@ export async function POST(request: NextRequest) {
       { status: 409 }
     );
   }
+  // The same threshold the evaluations screen applies before it offers the
+  // decision: one proposal is nothing to rank against.
+  if (evaluations.length < 2) {
+    return NextResponse.json(
+      { error: "A ranking needs at least two scored proposals." },
+      { status: 409 }
+    );
+  }
 
   // Build evaluations JSON with vendor names
   const evaluationsWithVendors = evaluations.map((e: EvaluationRow) => ({
