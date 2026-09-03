@@ -85,19 +85,16 @@ export async function POST(request: NextRequest) {
     );
   }
 
-  // The revision of the scores this ranking is built from, saved with it so
-  // freshness is judged against what the model saw rather than when the row
-  // was written. The model call below takes a while, and an override made in
-  // another tab during it is newer than this and older than the save.
-  const evaluationsAsOf = (evaluations as EvaluationRow[]).reduce<
-    string | null
-  >(
-    (latest, e) =>
-      e.updated_at != null && (latest == null || e.updated_at > latest)
-        ? e.updated_at
-        : latest,
-    null
-  );
+  // Exactly which evaluation versions this ranking is built from, saved with
+  // it so freshness is judged against what the model saw rather than when
+  // the row was written. The model call below takes a while, and an override
+  // made in another tab during it changes a row this ranking has already
+  // read. Recorded per row rather than as a newest-timestamp watermark: see
+  // the column's note in schema.sql.
+  const evaluationRevisions: Record<string, string | null> =
+    Object.fromEntries(
+      (evaluations as EvaluationRow[]).map((e) => [e.response_id, e.updated_at])
+    );
 
   // Fetch rubric
   const { data: rubric } = await supabase
@@ -231,7 +228,7 @@ export async function POST(request: NextRequest) {
           interview_focus_areas: comparison.interview_focus_areas || [],
           model_used: model,
           prompt_version: PROMPT_VERSION,
-          evaluations_as_of: evaluationsAsOf,
+          evaluation_revisions: evaluationRevisions,
         },
         { onConflict: "rfp_id" }
       )

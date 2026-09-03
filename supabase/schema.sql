@@ -120,16 +120,30 @@ update public.comparisons set updated_at = coalesce(created_at, now()) where upd
 alter table public.comparisons alter column updated_at set default now();
 alter table public.comparisons alter column updated_at set not null;
 
--- The evaluations revision a ranking was built from: the newest
--- `evaluations.updated_at` the compare route read before it called the model.
--- This row's `updated_at` is when the ranking was *saved*, a model call later,
--- and an override landing in that window is newer than what the ranking saw
--- but older than the row — so judged against `updated_at` the ranking read as
--- current. Backfilled from `updated_at`, which reads existing rankings as
--- having seen everything up to their last save; the best available answer.
+-- Exactly which evaluations a ranking was built from: `{ response_id:
+-- updated_at }` for every row the compare route read before it called the
+-- model. A ranking is current iff each of those rows is unchanged and none
+-- have been added or removed.
+--
+-- Per row, not a watermark. This row's own `updated_at` is when the ranking
+-- was *saved*, a model call after its inputs were read; and a single "newest
+-- input" timestamp is not safe either, because `now()` is a transaction's
+-- start time, not its commit order — an override that started first and
+-- committed last carries a timestamp older than a watermark taken between the
+-- two. Recording each version read makes no ordering assumption at all.
+--
+-- Backfilled from the current evaluations, which reads existing rankings as
+-- having seen the scores as they are now; the best available answer.
 alter table public.comparisons
-  add column if not exists evaluations_as_of timestamptz;
-update public.comparisons set evaluations_as_of = updated_at where evaluations_as_of is null;
+  drop column if exists evaluations_as_of;
+alter table public.comparisons
+  add column if not exists evaluation_revisions jsonb;
+update public.comparisons c
+  set evaluation_revisions = coalesce(
+    (select jsonb_object_agg(e.response_id, e.updated_at)
+       from public.evaluations e where e.rfp_id = c.rfp_id),
+    '{}'::jsonb)
+  where c.evaluation_revisions is null;
 
 -- When the rubric's criteria last changed — not when its row was last
 -- written. Accepting a rubric flips `edited_by_user` and rewrites `criteria`

@@ -31,7 +31,11 @@ import { ScoreBar } from "@/components/viz/score-bar";
 import { TierChip } from "@/components/viz/tier-chip";
 import { ScoreGrid } from "@/components/viz/score-grid";
 import { formatScore, scoreTier, toPercent } from "@/lib/score";
-import { scoredAgainstCurrentRubric } from "@/lib/stage";
+import {
+  evaluationRevisionsOf,
+  sameInstant,
+  scoredAgainstCurrentRubric,
+} from "@/lib/stage";
 import {
   exportCsv,
   exportJson,
@@ -75,8 +79,8 @@ interface Comparison {
   prompt_version?: string;
   created_at: string;
   updated_at?: string | null;
-  /** The newest evaluation this ranking saw; see lib/stage.ts. */
-  evaluations_as_of?: string | null;
+  /** Exactly which evaluation versions this ranking saw; see lib/stage.ts. */
+  evaluation_revisions?: unknown;
   interview_focus_areas?: string[];
 }
 
@@ -415,7 +419,7 @@ export default function ComparisonPage({
   );
 
   /**
-   * Whether any evaluation has been written since the ranking read its inputs.
+   * Whether any evaluation the ranking read has been written since.
    *
    * This is the authoritative signal, and it supersedes comparing overall
    * scores. Two offsetting criterion edits — one up, one down, same weighted
@@ -423,23 +427,28 @@ export default function ComparisonPage({
    * while the exported criterion values no longer match the rationale and
    * close calls the model wrote. The row's update time moved either way.
    *
-   * The ranking side is `evaluations_as_of`, the newest evaluation the compare
-   * route read before it called the model — not the row's `updated_at`, which
-   * is when the ranking was saved, a model call later. An override landing in
-   * that window is newer than what the ranking saw and older than the row. A
-   * ranking that does not say what it saw reads as out of date.
+   * The ranking side is `evaluation_revisions`: the version of each row the
+   * compare route read before it called the model, compared row by row with
+   * the version now. Not the row's `updated_at`, which is when the ranking was
+   * saved, a model call later; and not a newest-input watermark, which assumes
+   * timestamps commit in order — see lib/stage.ts. A ranking that does not say
+   * what it saw reads as out of date. Added and removed proposals are reported
+   * separately, so only rows on both sides are compared here.
    */
-  const rankingSawUpTo = comparison?.evaluations_as_of ?? null;
+  const rankingSaw = useMemo(
+    () =>
+      comparison ? evaluationRevisionsOf(comparison.evaluation_revisions) : null,
+    [comparison]
+  );
   const evaluationsEditedSinceRanking = useMemo(() => {
     if (!comparison) return false;
-    if (rankingSawUpTo == null) return evaluations.length > 0;
-    return evaluations.some((e) => {
-      const editedAt = e.updated_at ?? e.created_at;
-      // A row the ranking saw is its input, not an edit to it; only a strictly
-      // newer one counts.
-      return editedAt != null && editedAt > rankingSawUpTo;
-    });
-  }, [comparison, rankingSawUpTo, evaluations]);
+    if (rankingSaw == null) return evaluations.length > 0;
+    return evaluations.some(
+      (e) =>
+        e.response_id in rankingSaw &&
+        !sameInstant(rankingSaw[e.response_id], e.updated_at ?? e.created_at)
+    );
+  }, [comparison, rankingSaw, evaluations]);
 
   /**
    * Whether live scores would put the field in a different order.
@@ -558,14 +567,14 @@ export default function ComparisonPage({
     } else if (evaluationsEditedSinceRanking) {
       // The overall did not move, so say what did rather than nothing.
       reasons.push(
-        rankingSawUpTo == null
+        rankingSaw == null
           ? "This ranking does not record which scores it saw."
           : "A criterion score was changed after this ranking without moving the total."
       );
     }
     return reasons;
   }, [
-    rankingSawUpTo,
+    rankingSaw,
     scoredAgainstOldRubric,
     awaitingScoreSinceRanking,
     addedSinceRanking,

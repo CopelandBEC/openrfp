@@ -11,6 +11,7 @@ import { isGuest } from "@/lib/auth/guest";
 import {
   deriveStage,
   embeddedCount,
+  evaluationRevisionsOf,
   firstEmbedded,
   rankedResponseIdsOf,
 } from "@/lib/stage";
@@ -42,7 +43,7 @@ export default async function DashboardPage({
   const { data: rfps, error: loadError } = await supabase
     .from("rfps")
     .select(
-      "id, title, description, created_at, rubrics(edited_by_user, updated_at), responses(count), evaluations(response_id, updated_at, rubric_updated_at), comparisons(evaluations_as_of, ranking)"
+      "id, title, description, created_at, rubrics(edited_by_user, updated_at), responses(count), evaluations(response_id, updated_at, rubric_updated_at), comparisons(evaluation_revisions, ranking)"
     )
     .order("created_at", { ascending: false });
 
@@ -133,9 +134,8 @@ export default async function DashboardPage({
                   updated_at: string;
                   rubric_updated_at: string | null;
                 }[];
-                const evaluatedAt = evaluations.map((e) => e.updated_at);
                 const comparison = firstEmbedded<{
-                  evaluations_as_of: string | null;
+                  evaluation_revisions: unknown;
                   ranking: unknown;
                 }>(rfp.comparisons);
                 return (
@@ -152,13 +152,13 @@ export default async function DashboardPage({
                         responseCount,
                         evaluations: evaluations.map((e) => ({
                           responseId: e.response_id,
+                          updatedAt: e.updated_at,
                           rubricUpdatedAt: e.rubric_updated_at,
                         })),
                         rubricUpdatedAt: rubric?.updated_at ?? null,
                         hasRanking: comparison != null,
-                        rankingInputsAsOf: comparison?.evaluations_as_of ?? null,
-                        latestEvaluationAt: evaluatedAt.length
-                          ? evaluatedAt.reduce((a, b) => (a > b ? a : b))
+                        rankingSaw: comparison
+                          ? evaluationRevisionsOf(comparison.evaluation_revisions)
                           : null,
                         rankedResponseIds: comparison
                           ? rankedResponseIdsOf(comparison.ranking)

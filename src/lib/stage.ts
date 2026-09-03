@@ -51,27 +51,20 @@ export interface StageInputs {
   /** Whether a saved ranking exists at all. */
   hasRanking: boolean;
   /**
-   * The evaluations revision the saved ranking was built from: the newest
-   * `evaluations.updated_at` the compare route read before calling the model,
-   * stored as `comparisons.evaluations_as_of`. Null if there is no ranking, or
-   * if the row does not say — which reads as out of date, and a re-rank fixes.
+   * Exactly which evaluation versions the saved ranking was built from:
+   * `comparisons.evaluation_revisions`, a `{ response_id: updated_at }` map
+   * of every row the compare route read before calling the model. Null if
+   * there is no ranking, or if the row does not say — which reads as out of
+   * date, and a re-rank fixes.
    *
-   * Not the row's own `updated_at`. That is when the ranking was *saved*, a
-   * model call after its inputs were read, and an override landing in that
-   * window is newer than what the ranking saw but older than the row. And not
-   * `created_at`, which a re-rank's upsert never moves.
+   * Per row, not a watermark. The row's own `updated_at` is when the ranking
+   * was *saved*, a model call later; and a single newest-input timestamp is
+   * not safe either, since `now()` is a transaction's start time rather than
+   * its commit order. Comparing each version read against each version now
+   * makes no ordering assumption. `created_at` is out for the older reason:
+   * a re-rank's upsert never moves it.
    */
-  rankingInputsAsOf: string | null;
-  /**
-   * When any evaluation was last written.
-   *
-   * Also `updated_at`, and for a second reason: an override writes `scores`
-   * and `overall_score` in place, so nothing about the row's creation moves.
-   * Using the update time also catches the case an overall-score comparison
-   * cannot see at all — raising one criterion and lowering another by the same
-   * weighted amount leaves the total identical, but the row was still touched.
-   */
-  latestEvaluationAt: string | null;
+  rankingSaw: Record<string, string | null> | null;
   /**
    * The `response_id` of every entry in the saved ranking, or null if there
    * isn't one.
@@ -88,6 +81,13 @@ export interface StageInputs {
 
 export interface ScoredProposal {
   responseId: string;
+  /**
+   * When the row was last written. An override edits `scores` in place and
+   * re-scoring upserts, so creation time never moves; this does either way —
+   * including for offsetting criterion edits that leave the total unchanged,
+   * which no score comparison can see.
+   */
+  updatedAt: string | null;
   /** The `rubrics.updated_at` the scores were produced against. */
   rubricUpdatedAt: string | null;
 }
@@ -114,8 +114,7 @@ export function deriveStage({
   evaluations,
   rubricUpdatedAt,
   hasRanking,
-  rankingInputsAsOf,
-  latestEvaluationAt,
+  rankingSaw,
   rankedResponseIds,
 }: StageInputs): Stage {
   // Prerequisites first, and "decided" last. Checked the other way round, an
@@ -175,15 +174,16 @@ export function deriveStage({
       done: false,
     };
   }
-  // Everything upstream is satisfied, so a ranking that has seen every score
-  // is the finished article. One that predates a score has not, and neither
-  // has one whose set of vendors is not the set that is scored now: a
-  // proposal removed after ranking leaves no newer timestamp behind, so the
-  // set has to be checked as well as the times.
+  // Everything upstream is satisfied, so a ranking built from exactly the
+  // scores that exist now, as they are now, is the finished article. Three
+  // things can make it not so: a score it read has since been written, a
+  // scored proposal it never read exists, or a proposal it ranked no longer
+  // does. The first two are the revision map; the third is the ranking's own
+  // list of vendors against the scored set.
   const comparisonIsCurrent =
     hasRanking &&
-    rankingInputsAsOf != null &&
-    (latestEvaluationAt == null || latestEvaluationAt <= rankingInputsAsOf) &&
+    rankingSaw != null &&
+    rankingSawExactly(rankingSaw, evaluations) &&
     rankedResponseIds != null &&
     sameSet(
       rankedResponseIds,
@@ -244,12 +244,39 @@ export function scoredAgainstCurrentRubric(
   rubricUpdatedAt: string | null | undefined
 ): boolean {
   if (rubricUpdatedAt == null) return true;
-  if (evaluationRubricAt == null) return false;
-  const a = Date.parse(evaluationRubricAt);
-  const b = Date.parse(rubricUpdatedAt);
-  return Number.isFinite(a) && Number.isFinite(b)
-    ? a === b
-    : evaluationRubricAt === rubricUpdatedAt;
+  return sameInstant(evaluationRubricAt, rubricUpdatedAt);
+}
+
+/**
+ * Whether a ranking's recorded inputs are exactly the evaluations as they are
+ * now: the same set of proposals, each with the version the ranking read.
+ */
+export function rankingSawExactly(
+  rankingSaw: Record<string, string | null>,
+  evaluations: { responseId: string; updatedAt: string | null }[]
+): boolean {
+  const sawIds = Object.keys(rankingSaw);
+  if (!sameSet(sawIds, evaluations.map((e) => e.responseId))) return false;
+  return evaluations.every((e) =>
+    sameInstant(rankingSaw[e.responseId], e.updatedAt)
+  );
+}
+
+/**
+ * Two timestamps from the database name the same instant.
+ *
+ * Compared as instants rather than strings so a difference in rendering —
+ * `Z` against `+00:00`, trailing zeros — cannot read as a difference in
+ * time. Null on either side is not an instant and never matches.
+ */
+export function sameInstant(
+  a: string | null | undefined,
+  b: string | null | undefined
+): boolean {
+  if (a == null || b == null) return false;
+  const pa = Date.parse(a);
+  const pb = Date.parse(b);
+  return Number.isFinite(pa) && Number.isFinite(pb) ? pa === pb : a === b;
 }
 
 function sameSet(a: string[], b: string[]): boolean {
@@ -278,6 +305,28 @@ export function rankedResponseIdsOf(ranking: unknown): string[] | null {
     ids.push(id);
   }
   return ids;
+}
+
+/**
+ * Read `comparisons.evaluation_revisions` as the map it is meant to be.
+ *
+ * Written by the compare route, so its shape is dependable in a way the
+ * model-emitted `ranking` is not — but it is still jsonb, and anything that is
+ * not an object of string-or-null values reads as "does not say", which the
+ * stage reports as needing a re-rank rather than as decided.
+ */
+export function evaluationRevisionsOf(
+  value: unknown
+): Record<string, string | null> | null {
+  if (value == null || typeof value !== "object" || Array.isArray(value)) {
+    return null;
+  }
+  const out: Record<string, string | null> = {};
+  for (const [id, at] of Object.entries(value as Record<string, unknown>)) {
+    if (at !== null && typeof at !== "string") return null;
+    out[id] = at;
+  }
+  return out;
 }
 
 /**
