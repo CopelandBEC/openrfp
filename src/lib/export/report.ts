@@ -120,10 +120,26 @@ function slug(title: string): string {
  * was four columns of short values; the per-criterion, rationale and
  * strengths/weaknesses columns added here are free text where a leading dash
  * and an internal comma are close to guaranteed.
+ *
+ * It also has to look past leading whitespace and control characters. Anchored
+ * at byte zero it was trivially bypassed: quoting preserves a leading tab, and
+ * a compatible importer strips it and evaluates the formula behind it. That
+ * matters more in this revision than it used to, because these columns now
+ * carry the first-stage evaluation's strengths and weaknesses verbatim — text
+ * written by a model reading a PDF that a bidding vendor supplied, with no
+ * second model pass in between to launder it.
  */
 function csvCell(value: string | number | null | undefined): string {
   const text = value == null ? "" : String(value);
-  const guarded = /^[=+\-@]/.test(text) ? `'${text}` : text;
+  // Leading control characters are dropped before anything else. A tab or a
+  // carriage return ahead of an `=` is invisible in the cell and defeats a
+  // check anchored at byte zero, which is the only thing it is good for: the
+  // importer acts on the `=` behind it. Nothing legitimate in a strength or a
+  // rationale begins with a control character.
+  const normalised = text.replace(/^[\u0000-\u001f]+/, "");
+  // Then decide on the first character that a spreadsheet would actually act
+  // on, rather than on the first byte.
+  const guarded = /^\s*[=+\-@]/.test(normalised) ? `'${normalised}` : normalised;
   return `"${guarded.replace(/"/g, '""')}"`;
 }
 
