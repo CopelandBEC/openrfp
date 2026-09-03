@@ -70,6 +70,12 @@ export interface ReportData {
    * no way to find that out otherwise.
    */
   rankingStale?: boolean;
+  /**
+   * Set when the scores themselves are not all current — a proposal not yet
+   * scored, or scored against an earlier rubric. The report must not then
+   * describe its scores as current, whatever the ranking says.
+   */
+  needsScoringFirst?: boolean;
   /** What changed, one clause each. Printed under the ranking. */
   stalenessReasons?: string[];
 }
@@ -608,9 +614,16 @@ export function buildReportHtml(data: ReportData): string {
 
   const stale = data.rankingStale
     ? `<p class="stale"><strong>This ranking is out of date.</strong>
-       Every score in this report is the current one; the order is the one the
-       model gave before the change. Re-rank in OpenRFP to bring the two back
-       into line.${
+       ${
+         data.needsScoringFirst
+           ? `Not every proposal is scored against the rubric as it now
+       stands — the note below says which — so the scores here cannot all
+       be relied on. Score them in OpenRFP and re-rank before using this
+       report.`
+           : `Every score in this report is the current one; the order is the
+       one the model gave before the change. Re-rank in OpenRFP to bring the
+       two back into line.`
+       }${
          data.stalenessReasons?.length
            ? `<br><span style="color:var(--ink-soft)">${data.stalenessReasons
                .map((r) => esc(r))

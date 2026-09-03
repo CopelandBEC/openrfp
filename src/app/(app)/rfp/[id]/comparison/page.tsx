@@ -618,6 +618,7 @@ export default function ComparisonPage({
       vendors,
       comparativeAnalysis: comparison.comparative_analysis,
       rankingStale,
+      needsScoringFirst,
       stalenessReasons,
       closeCalls: (comparison.close_calls ?? []).map((cc) => ({
         criterionName: cc.criterion_name,
@@ -633,6 +634,7 @@ export default function ComparisonPage({
     comparison,
     rankedVendors,
     rankingStale,
+    needsScoringFirst,
     stalenessReasons,
     criteriaList,
     rfpTitle,
@@ -671,11 +673,17 @@ export default function ComparisonPage({
           />
         ) : !comparison ? (
           <EmptyState
-            title="Ready to rank"
+            title={needsScoringFirst ? "Not ready to rank" : "Ready to rank"}
             action={
-              <Button onClick={generateComparison} disabled={generating}>
-                Rank the proposals
-              </Button>
+              needsScoringFirst ? (
+                <Button render={<Link href={`/rfp/${id}/responses`} />}>
+                  Score the proposals first
+                </Button>
+              ) : (
+                <Button onClick={generateComparison} disabled={generating}>
+                  Rank the proposals
+                </Button>
+              )
             }
           >
             {evaluations.length} proposals are scored. This last step ranks
@@ -1105,15 +1113,30 @@ export default function ComparisonPage({
                   </Button>
                 </>
               )}
-              <Button
-                variant="ghost"
-                onClick={generateComparison}
-                disabled={generating}
-                className="ml-auto text-muted-foreground"
-              >
-                <RotateCcwIcon aria-hidden="true" />
-                {generating ? "Re-ranking…" : "Re-rank"}
-              </Button>
+              {/* Every way to start a re-rank is guarded the same way: a
+                  ranking of a field with unscored or old-rubric proposals in
+                  it is out of date the moment it is saved, and costs a model
+                  call to find that out. */}
+              {needsScoringFirst ? (
+                <Button
+                  variant="ghost"
+                  render={<Link href={`/rfp/${id}/responses`} />}
+                  className="ml-auto text-muted-foreground"
+                >
+                  <RotateCcwIcon aria-hidden="true" />
+                  Score proposals first
+                </Button>
+              ) : (
+                <Button
+                  variant="ghost"
+                  onClick={generateComparison}
+                  disabled={generating}
+                  className="ml-auto text-muted-foreground"
+                >
+                  <RotateCcwIcon aria-hidden="true" />
+                  {generating ? "Re-ranking…" : "Re-rank"}
+                </Button>
+              )}
             </div>
             <p className="mt-2 text-xs text-muted-foreground">
               The report opens in a browser and prints to PDF, with the decision

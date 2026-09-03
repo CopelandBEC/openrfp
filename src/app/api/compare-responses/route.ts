@@ -13,6 +13,7 @@ import {
   PROMPT_VERSION,
 } from "@/lib/prompts/compare-responses";
 import { rateLimitResponse, reserveAICall } from "@/lib/rate-limit";
+import { scoredAgainstCurrentRubric } from "@/lib/stage";
 import { hashClientIp } from "@/lib/client-ip";
 
 // Model calls routinely run past the platform default; without this the
@@ -31,6 +32,7 @@ interface EvaluationRow {
   weaknesses: string[] | null;
   model_used: string | null;
   updated_at: string | null;
+  rubric_updated_at: string | null;
 }
 
 /** Shape of the `responses` select below. */
@@ -71,7 +73,7 @@ export async function POST(request: NextRequest) {
   const { data: evaluations, error: evalError } = await supabase
     .from("evaluations")
     .select(
-      "id, response_id, rfp_id, scores, overall_score, summary, strengths, weaknesses, model_used, updated_at"
+      "id, response_id, rfp_id, scores, overall_score, summary, strengths, weaknesses, model_used, updated_at, rubric_updated_at"
     )
     .eq("rfp_id", rfp_id);
 
@@ -99,7 +101,7 @@ export async function POST(request: NextRequest) {
   // Fetch rubric
   const { data: rubric } = await supabase
     .from("rubrics")
-    .select("criteria")
+    .select("criteria, updated_at")
     .eq("rfp_id", rfp_id)
     .single();
 
@@ -110,16 +112,48 @@ export async function POST(request: NextRequest) {
     );
   }
 
-  // Fetch vendor names for each response
-  const responseIds = evaluations.map((e: EvaluationRow) => e.response_id);
+  // Every proposal in the RFP, not just the scored ones: the field the
+  // ranking has to describe is all of them.
   const { data: responses } = await supabase
     .from("responses")
     .select("id, vendor_name")
-    .in("id", responseIds);
+    .eq("rfp_id", rfp_id);
 
   const vendorMap = new Map<string, string>(
     (responses || []).map((r: ResponseRow) => [r.id, r.vendor_name])
   );
+
+  // Refuse a field the ranking could not describe. A proposal not yet scored,
+  // or scored against a rubric that has since changed, makes the ranking out
+  // of date the moment it is saved — and it costs a model call and a rate
+  // limit reservation to produce. The screens guard their buttons the same
+  // way; this is the guard that holds whatever the caller is.
+  const scoredIds = new Set(
+    (evaluations as EvaluationRow[]).map((e) => e.response_id)
+  );
+  const unscored = ((responses || []) as ResponseRow[]).filter(
+    (r) => !scoredIds.has(r.id)
+  );
+  const staleScores = (evaluations as EvaluationRow[]).filter(
+    (e) => !scoredAgainstCurrentRubric(e.rubric_updated_at, rubric.updated_at)
+  );
+  if (unscored.length > 0 || staleScores.length > 0) {
+    const parts: string[] = [];
+    if (unscored.length > 0) {
+      parts.push(
+        `${unscored.length} proposal${unscored.length === 1 ? " is" : "s are"} not scored yet`
+      );
+    }
+    if (staleScores.length > 0) {
+      parts.push(
+        `${staleScores.length} ${staleScores.length === 1 ? "was" : "were"} scored against an earlier rubric`
+      );
+    }
+    return NextResponse.json(
+      { error: `Score every proposal first: ${parts.join(", and ")}.` },
+      { status: 409 }
+    );
+  }
 
   // Build evaluations JSON with vendor names
   const evaluationsWithVendors = evaluations.map((e: EvaluationRow) => ({
