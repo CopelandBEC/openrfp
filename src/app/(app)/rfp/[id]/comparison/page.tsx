@@ -354,11 +354,84 @@ export default function ComparisonPage({
     [sortedRanking, evalByResponseId, nameFor]
   );
 
-  /** True once any score has been changed since the ranking was produced. */
-  const rankingStale = useMemo(
+  /**
+   * Every way the saved ranking can have stopped describing the field.
+   *
+   * The first version of this checked one of them — a score moved on a vendor
+   * already in the ranking — which missed the two that matter more. The
+   * ranking is a snapshot of a set as well as of some numbers: a proposal
+   * added and scored afterwards is absent from it entirely, and one deleted
+   * leaves an entry behind with nothing under it. Neither showed up as drift,
+   * so a new bidder could be missing from the exported decision document with
+   * nothing on the page saying so.
+   */
+  const rankedIds = useMemo(
+    () => new Set(sortedRanking.map((e) => e.response_id)),
+    [sortedRanking]
+  );
+
+  /** Scored proposals the ranking never saw. */
+  const addedSinceRanking = useMemo(
+    () => evaluatedResponses.filter((r) => !rankedIds.has(r.id)),
+    [evaluatedResponses, rankedIds]
+  );
+
+  /** Ranked entries whose evaluation is gone. */
+  const removedSinceRanking = useMemo(
+    () => rankedVendors.filter((v) => !v.evaluation),
+    [rankedVendors]
+  );
+
+  const scoresMoved = useMemo(
     () => rankedVendors.some((v) => v.moved),
     [rankedVendors]
   );
+
+  /**
+   * Whether live scores would put the field in a different order.
+   *
+   * This is the difference between "the numbers shifted a little" and "the
+   * ranking now names the wrong leader", and it decides whether this page is
+   * still allowed to recommend anyone.
+   */
+  const orderChanged = useMemo(() => {
+    const live = [...rankedVendors].sort((a, b) => (b.score ?? 0) - (a.score ?? 0));
+    return live.some((v, i) => v.responseId !== rankedVendors[i]?.responseId);
+  }, [rankedVendors]);
+
+  const rankingStale =
+    scoresMoved ||
+    addedSinceRanking.length > 0 ||
+    removedSinceRanking.length > 0;
+
+  /** Said in one line each, on the page and in the exported report. */
+  const stalenessReasons = useMemo(() => {
+    const reasons: string[] = [];
+    if (addedSinceRanking.length > 0) {
+      reasons.push(
+        `${addedSinceRanking.length} proposal${
+          addedSinceRanking.length === 1 ? "" : "s"
+        } scored since this ranking and not in it: ${addedSinceRanking
+          .map((r) => r.vendor_name)
+          .join(", ")}`
+      );
+    }
+    if (removedSinceRanking.length > 0) {
+      reasons.push(
+        `${removedSinceRanking.length} ranked proposal${
+          removedSinceRanking.length === 1 ? "" : "s"
+        } no longer scored: ${removedSinceRanking
+          .map((v) => v.name)
+          .join(", ")}`
+      );
+    }
+    if (orderChanged) {
+      reasons.push("A changed score has reordered the field.");
+    } else if (scoresMoved) {
+      reasons.push("A score has changed, but the order still holds.");
+    }
+    return reasons;
+  }, [addedSinceRanking, removedSinceRanking, orderChanged, scoresMoved]);
 
   const winner = rankedVendors[0] ?? null;
   const runnerUp = rankedVendors[1] ?? null;
@@ -424,6 +497,7 @@ export default function ComparisonPage({
       vendors,
       comparativeAnalysis: comparison.comparative_analysis,
       rankingStale,
+      stalenessReasons,
       closeCalls: (comparison.close_calls ?? []).map((cc) => ({
         criterionName: cc.criterion_name,
         note: cc.note,
@@ -438,6 +512,7 @@ export default function ComparisonPage({
     comparison,
     rankedVendors,
     rankingStale,
+    stalenessReasons,
     criteriaList,
     rfpTitle,
     interviewFocusAreas,
@@ -525,12 +600,21 @@ export default function ComparisonPage({
               <section className="animate-reveal mt-8 rounded-xl bg-card p-6 ring-1 ring-foreground/10">
                 <div className="flex flex-wrap items-start justify-between gap-6">
                   <div className="min-w-0">
+                    {/* "Recommended" is a claim about the current scores, so
+                        it is only made when the current scores still support
+                        it. Once an edit has reordered the field, this says
+                        what it can defend — who the model put first when it
+                        ran — and the notice below says the rest. */}
                     <p className="flex items-center gap-1.5 text-xs font-medium tracking-wide text-muted-foreground uppercase">
-                      <TrophyIcon
-                        className="size-3.5 text-primary"
-                        aria-hidden="true"
-                      />
-                      Recommended
+                      {!rankingStale && (
+                        <TrophyIcon
+                          className="size-3.5 text-primary"
+                          aria-hidden="true"
+                        />
+                      )}
+                      {rankingStale
+                        ? "Ranked first when this ran"
+                        : "Recommended"}
                     </p>
                     <h2 className="mt-2 text-2xl font-bold tracking-tight text-foreground">
                       {winner.name}
@@ -548,7 +632,11 @@ export default function ComparisonPage({
                   />
                 </div>
 
-                {margin != null && runnerUp && (
+                {/* A margin is only meaningful while the order holds. Once an
+                    edit has reordered the field, subtracting the live scores of
+                    the old first and second yields a negative "points clear",
+                    which is worse than saying nothing. */}
+                {margin != null && runnerUp && !orderChanged && (
                   <p
                     className="mt-5 border-t border-border/60 pt-4 text-sm text-foreground"
                     // The close-call warning is a genuine caution about the
@@ -599,10 +687,13 @@ export default function ComparisonPage({
                   />
                   <span>
                     <span className="font-medium">
-                      A score has changed since this ranking.
+                      This ranking is out of date.
                     </span>{" "}
                     The scores below are current; the order is the one the model
-                    gave before the edit.
+                    gave before the change.
+                    <span className="mt-1.5 block text-muted-foreground">
+                      {stalenessReasons.join(" ")}
+                    </span>
                   </span>
                 </p>
                 <Button
@@ -684,6 +775,39 @@ export default function ComparisonPage({
                 </AccordionItem>
               ))}
             </Accordion>
+
+            {/* A proposal scored after the ranking ran has no rank to sit at,
+                and dropping it would mean the decision document quietly
+                omitted a bidder. It gets listed, unranked and labelled. */}
+            {addedSinceRanking.length > 0 && (
+              <ul className="mt-2.5 space-y-2.5">
+                {addedSinceRanking.map((response, index) => {
+                  const evaluation = evalByResponseId.get(response.id);
+                  return (
+                    <li
+                      key={response.id}
+                      className="animate-reveal flex items-center gap-3 rounded-xl bg-muted/40 px-4 py-3 ring-1 ring-foreground/5"
+                      style={{ ["--reveal-i" as string]: index }}
+                    >
+                      <span className="flex size-6 shrink-0 items-center justify-center rounded-md bg-muted text-xs font-semibold text-muted-foreground">
+                        —
+                      </span>
+                      <span className="min-w-0 flex-1">
+                        <span className="block truncate text-sm font-medium text-foreground">
+                          {response.vendor_name}
+                        </span>
+                        <span className="text-xs text-muted-foreground">
+                          Scored after this ranking — not included in it
+                        </span>
+                      </span>
+                      <span className="shrink-0 text-xs font-semibold tabular-nums text-foreground">
+                        {formatScore(evaluation?.overall_score)}
+                      </span>
+                    </li>
+                  );
+                })}
+              </ul>
+            )}
 
             {/* ------------------------------------------------------------
              * What to do next

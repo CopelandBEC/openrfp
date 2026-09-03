@@ -33,7 +33,7 @@ export default async function DashboardPage({
   const { data: rfps } = await supabase
     .from("rfps")
     .select(
-      "id, title, description, created_at, rubrics(edited_by_user), responses(count), evaluations(count), comparisons(count)"
+      "id, title, description, created_at, rubrics(edited_by_user), responses(count), evaluations(created_at), comparisons(created_at)"
     )
     .order("created_at", { ascending: false });
 
@@ -93,6 +93,14 @@ export default async function DashboardPage({
                   rfp.rubrics
                 );
                 const responseCount = embeddedCount(rfp.responses);
+                // Timestamps rather than a bare count, so a ranking that
+                // predates a score can be told apart from a current one.
+                const evaluatedAt = (
+                  (rfp.evaluations ?? []) as { created_at: string }[]
+                ).map((e) => e.created_at);
+                const comparison = firstEmbedded<{ created_at: string }>(
+                  rfp.comparisons
+                );
                 return (
                   <RfpCard
                     key={rfp.id}
@@ -105,8 +113,11 @@ export default async function DashboardPage({
                         hasRubric: rubric != null,
                         rubricAccepted: rubric?.edited_by_user === true,
                         responseCount,
-                        evaluationCount: embeddedCount(rfp.evaluations),
-                        hasComparison: embeddedCount(rfp.comparisons) > 0,
+                        evaluationCount: evaluatedAt.length,
+                        comparisonAt: comparison?.created_at ?? null,
+                        latestEvaluationAt: evaluatedAt.length
+                          ? evaluatedAt.reduce((a, b) => (a > b ? a : b))
+                          : null,
                       }),
                     }}
                   />

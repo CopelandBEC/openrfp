@@ -30,7 +30,16 @@ export interface StageInputs {
   rubricAccepted: boolean;
   responseCount: number;
   evaluationCount: number;
-  hasComparison: boolean;
+  /** When the ranking was produced, or null if there isn't one. */
+  comparisonAt: string | null;
+  /**
+   * The newest evaluation's timestamp.
+   *
+   * A comparison older than the newest score is a comparison that did not see
+   * it — a proposal added and scored after the ranking ran leaves the ranking
+   * in place but no longer describing the field.
+   */
+  latestEvaluationAt: string | null;
 }
 
 export interface Stage {
@@ -51,11 +60,14 @@ export function deriveStage({
   rubricAccepted,
   responseCount,
   evaluationCount,
-  hasComparison,
+  comparisonAt,
+  latestEvaluationAt,
 }: StageInputs): Stage {
-  if (hasComparison) {
-    return { step: 4, label: "Decided", next: "comparison", done: true };
-  }
+  // Prerequisites first, and "decided" last. Checked the other way round, an
+  // existing comparison row shouted down every other fact: regenerating the
+  // rubric on a finished RFP resets `edited_by_user` without deleting the
+  // comparison, and adding a proposal leaves it in place too, so the card said
+  // "Decided" and linked to a ranking that predated both.
   if (!hasRubric) {
     return { step: 1, label: "Needs a rubric", next: "rubric", done: false };
   }
@@ -79,9 +91,17 @@ export function deriveStage({
   if (evaluationCount < responseCount) {
     return { step: 2, label: "Needs scoring", next: "responses", done: false };
   }
+  // Everything upstream is satisfied, so a ranking that has seen every score
+  // is the finished article. One that predates a score has not.
+  const comparisonIsCurrent =
+    comparisonAt != null &&
+    (latestEvaluationAt == null || latestEvaluationAt <= comparisonAt);
+  if (comparisonIsCurrent) {
+    return { step: 4, label: "Decided", next: "comparison", done: true };
+  }
   return {
     step: 3,
-    label: "Ready to rank",
+    label: comparisonAt == null ? "Ready to rank" : "Needs re-ranking",
     next: "evaluations",
     done: false,
   };

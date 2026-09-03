@@ -70,6 +70,8 @@ export interface ReportData {
    * no way to find that out otherwise.
    */
   rankingStale?: boolean;
+  /** What changed, one clause each. Printed under the ranking. */
+  stalenessReasons?: string[];
 }
 
 // ---------------------------------------------------------------------------
@@ -105,14 +107,24 @@ function slug(title: string): string {
 /**
  * Escape one cell.
  *
- * The leading apostrophe is the formula-injection guard the previous export
- * already had: a vendor name beginning `=` is a live formula in Excel, and the
- * text here comes from a PDF someone else wrote.
+ * The leading apostrophe is the formula-injection guard this export inherited:
+ * a vendor name beginning `=` is a live formula in Excel, and the text here
+ * came out of a PDF someone else wrote.
+ *
+ * It has to go *inside* the quotes. Written the other way — apostrophe, then
+ * the opening quote — the field no longer begins with a quote, so RFC 4180
+ * says it is not a quoted field at all: the quotes become literal and the
+ * first comma inside the value ends the column. One weakness bullet starting
+ * "- " and containing a comma shifts every column after it on that row. The
+ * inherited version had this backwards, and it went unnoticed while the export
+ * was four columns of short values; the per-criterion, rationale and
+ * strengths/weaknesses columns added here are free text where a leading dash
+ * and an internal comma are close to guaranteed.
  */
 function csvCell(value: string | number | null | undefined): string {
   const text = value == null ? "" : String(value);
-  const escaped = `"${text.replace(/"/g, '""')}"`;
-  return /^[=+\-@]/.test(text) ? `'${escaped}` : escaped;
+  const guarded = /^[=+\-@]/.test(text) ? `'${text}` : text;
+  return `"${guarded.replace(/"/g, '""')}"`;
 }
 
 /**
@@ -521,7 +533,7 @@ export function buildReportHtml(data: ReportData): string {
       : null;
 
   const marginNote =
-    margin == null
+    margin == null || data.rankingStale
       ? ""
       : margin < 3
         ? `<p class="margin-note">This is close — ${esc(
@@ -536,7 +548,9 @@ export function buildReportHtml(data: ReportData): string {
   const verdict = winner
     ? `
     <section class="verdict">
-      <p class="eyebrow">Recommended</p>
+      <p class="eyebrow">${
+        data.rankingStale ? "Ranked first when this ran" : "Recommended"
+      }</p>
       <div style="display:flex;flex-wrap:wrap;gap:20px;justify-content:space-between;align-items:flex-start;margin-top:6px">
         <div style="min-width:0">
           <p class="verdict-name">${esc(winner.vendorName)}</p>
@@ -575,10 +589,16 @@ export function buildReportHtml(data: ReportData): string {
     .join("");
 
   const stale = data.rankingStale
-    ? `<p class="stale"><strong>A score changed after this ranking was produced.</strong>
+    ? `<p class="stale"><strong>This ranking is out of date.</strong>
        Every score in this report is the current one; the order is the one the
-       model gave before that edit. Re-rank in OpenRFP to bring the two back
-       into line.</p>`
+       model gave before the change. Re-rank in OpenRFP to bring the two back
+       into line.${
+         data.stalenessReasons?.length
+           ? `<br><span style="color:var(--ink-soft)">${data.stalenessReasons
+               .map((r) => esc(r))
+               .join(" ")}</span>`
+           : ""
+       }</p>`
     : "";
 
   const interview = data.interviewFocusAreas.length
