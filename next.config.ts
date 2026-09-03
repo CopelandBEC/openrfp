@@ -10,17 +10,23 @@ const nextConfig: NextConfig = {
 
   // Keeping the package external is not enough on Vercel, where a function
   // ships only the files the build could trace. pdfjs loads its worker by a
-  // computed path, so pdf.worker.mjs was never traced and the deployed
-  // function failed with "Setting up fake worker failed" while the same code
-  // worked locally against a full node_modules. Force the files in.
+  // computed path, so pdf.worker.mjs was never traced. It also requires
+  // @napi-rs/canvas through createRequire — equally invisible to the tracer —
+  // to polyfill DOMMatrix, and then constructs a DOMMatrix at module scope, so
+  // without that package the library fails to load at all ("ReferenceError:
+  // DOMMatrix is not defined" in production, while the same code worked
+  // locally against a full node_modules). Force all of it in. The @napi-rs
+  // glob picks up whichever platform binary npm installed on the build host.
   outputFileTracingIncludes: {
     "/api/upload-rfp": [
       "./node_modules/pdfjs-dist/legacy/build/**",
       "./node_modules/pdf-parse/dist/**",
+      "./node_modules/@napi-rs/**",
     ],
     "/api/upload-response": [
       "./node_modules/pdfjs-dist/legacy/build/**",
       "./node_modules/pdf-parse/dist/**",
+      "./node_modules/@napi-rs/**",
     ],
   },
 };
