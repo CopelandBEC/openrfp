@@ -2,7 +2,9 @@ import { NextRequest, NextResponse } from "next/server";
 import { createClient } from "@/lib/supabase/server";
 import {
   createAIClient,
+  getMaxCompletionTokens,
   getModelId,
+  parseModelJson,
   truncateForModel,
 } from "@/lib/ai/client";
 import {
@@ -121,7 +123,7 @@ export async function POST(request: NextRequest) {
         { role: "user", content: userPrompt },
       ],
       response_format: { type: "json_object" },
-      max_tokens: 8000,
+      max_tokens: getMaxCompletionTokens(),
     });
 
     const content = response.choices[0]?.message?.content;
@@ -129,7 +131,7 @@ export async function POST(request: NextRequest) {
       throw new Error("AI returned no content");
     }
 
-    const evaluation = JSON.parse(content);
+    const evaluation = parseModelJson(content);
 
     // Calculate weighted overall score
     const criteria = rubric.criteria?.criteria || [];

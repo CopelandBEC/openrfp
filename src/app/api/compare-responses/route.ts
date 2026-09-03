@@ -1,6 +1,11 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createClient } from "@/lib/supabase/server";
-import { createAIClient, getModelId } from "@/lib/ai/client";
+import {
+  createAIClient,
+  getMaxCompletionTokens,
+  getModelId,
+  parseModelJson,
+} from "@/lib/ai/client";
 import {
   buildComparisonPrompt,
   PROMPT_VERSION,
@@ -128,7 +133,7 @@ export async function POST(request: NextRequest) {
         { role: "user", content: userPrompt },
       ],
       response_format: { type: "json_object" },
-      max_tokens: 6000,
+      max_tokens: getMaxCompletionTokens(),
     });
 
     const content = response.choices[0]?.message?.content;
@@ -136,7 +141,7 @@ export async function POST(request: NextRequest) {
       throw new Error("AI returned no content");
     }
 
-    const comparison = JSON.parse(content);
+    const comparison = parseModelJson(content);
 
     // Save comparison
     const { data: savedComparison, error: comparisonError } = await supabase

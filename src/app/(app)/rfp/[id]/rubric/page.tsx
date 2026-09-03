@@ -57,6 +57,25 @@ function parseScaleRange(scale: string): number[] {
 }
 
 /** Build a fresh criterion with empty scale descriptions for a 1-5 scale */
+/**
+ * The `rubrics.criteria` column holds the model's whole answer —
+ * `{ criteria: [...], total_weight }` — while this page works on the array.
+ * Accept either shape (the comparison page does the same), so a row written by
+ * the generator and one written by this page's own save both load.
+ */
+function normalizeRubric(row: Record<string, unknown>): Rubric {
+  const raw = row.criteria as
+    | Criterion[]
+    | { criteria?: Criterion[]; total_weight?: number }
+    | null
+    | undefined;
+  const criteria = Array.isArray(raw) ? raw : raw?.criteria ?? [];
+  const total_weight =
+    (row.total_weight as number | undefined) ??
+    (Array.isArray(raw) ? undefined : raw?.total_weight);
+  return { ...(row as Omit<Rubric, "criteria">), criteria, total_weight };
+}
+
 function makeBlankCriterion(): Criterion {
   return {
     id: `criterion_${crypto.randomUUID()}`,
@@ -115,7 +134,7 @@ export default function RubricPage({
           throw new Error(queryError.message);
         }
       } else if (data) {
-        setRubric(data as Rubric);
+        setRubric(normalizeRubric(data));
       }
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to load rubric");
@@ -136,8 +155,7 @@ export default function RubricPage({
         throw new Error(data.error || "Failed to generate rubric");
       }
       const data = await res.json();
-      const generated: Rubric = data.rubric;
-      setRubric(generated);
+      setRubric(normalizeRubric(data.rubric));
       setHasEdits(false);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Something went wrong");

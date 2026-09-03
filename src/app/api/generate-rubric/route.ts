@@ -2,7 +2,9 @@ import { NextRequest, NextResponse } from "next/server";
 import { createClient } from "@/lib/supabase/server";
 import {
   createAIClient,
+  getMaxCompletionTokens,
   getModelId,
+  parseModelJson,
   truncateForModel,
 } from "@/lib/ai/client";
 import {
@@ -75,7 +77,7 @@ export async function POST(request: NextRequest) {
         { role: "user", content: userPrompt },
       ],
       response_format: { type: "json_object" },
-      max_tokens: 4000,
+      max_tokens: getMaxCompletionTokens(),
     });
 
     const content = response.choices[0]?.message?.content;
@@ -86,7 +88,7 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    const rubric = JSON.parse(content);
+    const rubric = parseModelJson(content);
 
     // Save rubric to database
     const { data: savedRubric, error: rubricError } = await supabase
