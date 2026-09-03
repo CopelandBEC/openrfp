@@ -69,9 +69,21 @@ that signs up can spend your provider budget.
 `schema.sql` is idempotent — re-run the whole file to pick up schema or policy
 changes without recreating the project.
 
+**Upgrading from a version without guest mode? Re-run `schema.sql` before you
+deploy the new code, not after.** The AI routes now reserve every call through
+`reserve_ai_call` and fail closed, so until that function exists every rubric,
+evaluation and comparison request answers 503 ("Couldn't reserve this
+evaluation just now"). The reverse order is tolerable for a short window: the
+new schema stops the *old* code's usage rows from being written, which relaxes
+the spend cap until the new code is live. Do both in one sitting.
+
 **Add every origin you deploy to** (including preview URLs) under
 **Authentication → URL Configuration → Redirect URLs**, or the emailed link will
-refuse to complete sign-in.
+refuse to complete sign-in. Use a wildcard on the path — for example
+`https://your-app.vercel.app/auth/callback**` — because the "save my work"
+confirmation link carries a `?next=` query string, and Supabase matches
+non-Site-URL redirects against this list as glob patterns, so an exact
+`/auth/callback` entry does not cover it.
 
 ### Email setup (Resend)
 
@@ -171,7 +183,8 @@ update public.ai_limits set guest_hourly_limit = 4;
 ```
 
 `AI_RATE_LIMIT_PER_HOUR` still works and is applied on top, but only ever as
-the stricter of the two.
+the stricter of the two. It defaults to off (0); if you set it, remember that
+raising `member_hourly_limit` above it in the table has no effect.
 
 A guest holds an ordinary JWT, so they can upload straight to the Storage API
 without going through this app. `guest_file_limit` is therefore enforced by the

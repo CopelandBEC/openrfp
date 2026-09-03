@@ -52,8 +52,12 @@ export function SaveToAccountForm({
     );
 
     if (error) {
+      // GoTrue returns 422 for several unrelated conditions (a validation
+      // failure, anonymous conversion disabled, ...), so the status alone must
+      // not be read as "taken" — that message sends a guest off to abandon
+      // their work over what may have been a typo. The error code is exact.
       const alreadyRegistered =
-        error.status === 422 || /already/i.test(error.message);
+        error.code === "email_exists" || /already/i.test(error.message);
 
       setState({
         status: "error",
@@ -61,7 +65,9 @@ export function SaveToAccountForm({
           ? "That email already has an account. Sign in to it from the link below — note that this guest work won't carry over."
           : error.status === 429
             ? "Too many attempts — please wait a few minutes before trying again."
-            : "Couldn't send the confirmation email. Please try again.",
+            : error.status === 422
+              ? "That email address couldn't be used. Check it and try again."
+              : "Couldn't send the confirmation email. Please try again.",
       });
       return;
     }

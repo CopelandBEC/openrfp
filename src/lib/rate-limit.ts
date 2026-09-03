@@ -14,14 +14,18 @@ export type AIAction =
  * `reserve_ai_call` takes the stricter of the two. The database has to be the
  * authority because the reservation function is reachable over PostgREST by
  * any signed-in caller, so a limit travelling from here could otherwise be
- * replayed with a larger number. Set AI_RATE_LIMIT_PER_HOUR=0 to defer
- * entirely to the database.
+ * replayed with a larger number.
+ *
+ * Unset, empty, 0 or garbage all mean "defer to the database". Defaulting to
+ * a number here would silently pin every deployment below whatever an operator
+ * later raises `member_hourly_limit` to, which is exactly the confusion the
+ * table exists to avoid.
  */
 export function getHourlyLimit(): number {
   const raw = process.env.AI_RATE_LIMIT_PER_HOUR;
-  if (raw === undefined || raw === "") return 20;
+  if (raw === undefined || raw === "") return 0;
   const parsed = Number(raw);
-  return Number.isFinite(parsed) && parsed >= 0 ? parsed : 20;
+  return Number.isFinite(parsed) && parsed > 0 ? Math.floor(parsed) : 0;
 }
 
 export interface RateLimitResult {

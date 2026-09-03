@@ -1,6 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createClient } from "@/lib/supabase/server";
 import { extractPdfText } from "@/lib/pdf/extract-text";
+import { isGuest } from "@/lib/auth/guest";
+import { isStorageDenied } from "@/lib/storage-errors";
 
 // Parsing a large PDF can outrun the platform default.
 export const maxDuration = 60;
@@ -57,6 +59,19 @@ export async function POST(request: NextRequest) {
     .upload(fileName, file);
 
   if (uploadError) {
+    // A guest at their file cap is refused by the storage insert policy. That
+    // is a limit, not a fault, and it deserves an explanation.
+    if (isGuest(user) && isStorageDenied(uploadError)) {
+      return NextResponse.json(
+        {
+          error:
+            "Guest sessions are limited to a few uploaded files. Save your " +
+            "work to an account from the banner above to keep going.",
+        },
+        { status: 403 }
+      );
+    }
+    console.error("Failed to upload response file:", uploadError.message);
     return NextResponse.json(
       { error: "Failed to upload file" },
       { status: 500 }
@@ -87,6 +102,25 @@ export async function POST(request: NextRequest) {
     .single();
 
   if (responseError) {
+    // The file is already in storage, and for a guest it now occupies one of
+    // their capped slots. Remove it rather than leave an object no row will
+    // ever reference and no UI can delete.
+    await supabase.storage.from("rfp-files").remove([fileName]);
+
+    // A guest at their response cap trips the row-level security check on
+    // insert. That is a limit, not a fault.
+    if (responseError.code === "42501" && isGuest(user)) {
+      return NextResponse.json(
+        {
+          error:
+            "Guest sessions are limited to a few vendor responses. Save your " +
+            "work to an account from the banner above to keep going.",
+        },
+        { status: 403 }
+      );
+    }
+
+    console.error("Failed to create response:", responseError.message);
     return NextResponse.json(
       { error: "Failed to create response record" },
       { status: 500 }

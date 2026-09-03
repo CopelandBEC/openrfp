@@ -259,15 +259,15 @@ drop policy if exists "audit_log_insert_own" on public.audit_log;
 create policy "audit_log_insert_own" on public.audit_log
   for insert with check (auth.uid() = user_id);
 
--- AI usage: users can only see and record their own usage. No update or delete
--- policy — a caller must not be able to erase their way back under the limit.
+-- AI usage: users can see their own usage and nothing more. No insert, update
+-- or delete policy — rows are written only by reserve_ai_call (see the guest
+-- sessions section below), and a caller must not be able to erase their way
+-- back under the limit.
 alter table public.ai_usage enable row level security;
 drop policy if exists "ai_usage_select_own" on public.ai_usage;
 create policy "ai_usage_select_own" on public.ai_usage
   for select using (auth.uid() = user_id);
 drop policy if exists "ai_usage_insert_own" on public.ai_usage;
-create policy "ai_usage_insert_own" on public.ai_usage
-  for insert with check (auth.uid() = user_id);
 
 -- ============================================
 -- Auto-create profile on signup
@@ -481,6 +481,11 @@ begin
   end if;
 
   select * into v_limits from public.ai_limits where id;
+  if not found then
+    -- Every limit would be null, every "used >= limit" comparison false, and
+    -- the guard would fail open. Refuse instead; rate-limit.ts denies on error.
+    raise exception 'reserve_ai_call: public.ai_limits has no row';
+  end if;
 
   v_limit := case when v_guest
     then v_limits.guest_hourly_limit
@@ -558,7 +563,10 @@ begin
 end;
 $$;
 
-revoke all on function public.reserve_ai_call(text, text, integer) from public;
+-- Hosted Supabase grants EXECUTE on every new public function to anon and
+-- authenticated through default privileges. Those are explicit grants, so
+-- revoking from PUBLIC alone leaves them in place — each role has to be named.
+revoke all on function public.reserve_ai_call(text, text, integer) from public, anon, authenticated;
 grant execute on function public.reserve_ai_call(text, text, integer) to authenticated;
 
 -- ============================================
@@ -588,8 +596,13 @@ begin
 end;
 $$;
 
-revoke all on function public.can_create_rfp() from public;
+revoke all on function public.can_create_rfp() from public, anon, authenticated;
 grant execute on function public.can_create_rfp() to authenticated;
+
+-- The cap functions count per owner on every guest insert, and the RLS
+-- policies filter on the same columns for every read.
+create index if not exists rfps_owner_id_idx on public.rfps (owner_id);
+create index if not exists responses_rfp_id_idx on public.responses (rfp_id);
 
 -- Supersedes the policy of the same name defined earlier in this file.
 drop policy if exists "rfps_insert_own" on public.rfps;
@@ -630,7 +643,7 @@ begin
 end;
 $$;
 
-revoke all on function public.can_upload_file() from public;
+revoke all on function public.can_upload_file() from public, anon, authenticated;
 grant execute on function public.can_upload_file() to authenticated;
 
 -- Responses carry no per-RFP limit of their own, so a guest holding three RFPs
@@ -661,7 +674,7 @@ begin
 end;
 $$;
 
-revoke all on function public.can_create_response() from public;
+revoke all on function public.can_create_response() from public, anon, authenticated;
 grant execute on function public.can_create_response() to authenticated;
 
 -- Supabase ships storage.objects with row-level security enabled, and every
@@ -816,6 +829,10 @@ begin
 end;
 $$;
 
-revoke all on function public.stale_guest_ids(interval) from public;
-revoke all on function public.stale_guest_files(interval) from public;
-revoke all on function public.delete_stale_guests(interval) from public;
+-- Operator-only. Revoking from PUBLIC is not enough on hosted Supabase, where
+-- anon and authenticated hold explicit EXECUTE grants by default — left in
+-- place, anyone holding the public anon key could call delete_stale_guests
+-- over PostgREST. service_role keeps its grant for scripts/purge-stale-guests.mjs.
+revoke all on function public.stale_guest_ids(interval) from public, anon, authenticated;
+revoke all on function public.stale_guest_files(interval) from public, anon, authenticated;
+revoke all on function public.delete_stale_guests(interval) from public, anon, authenticated;

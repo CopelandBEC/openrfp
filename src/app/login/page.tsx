@@ -50,9 +50,9 @@ export default async function LoginPage({
             className="rounded-md border border-primary/30 bg-primary/5 p-3 text-sm text-muted-foreground"
             role="status"
           >
-            You have a guest evaluation in progress. Signing in here opens your
-            existing account instead — the guest work won&apos;t carry over. To
-            keep it, go back and use{" "}
+            You have a guest evaluation in progress. Signing in here opens an
+            existing account instead — the guest work won&apos;t carry over, and
+            no new account is created. To keep it, go back and use{" "}
             <span className="font-medium text-foreground">
               Save to an account
             </span>
@@ -61,7 +61,7 @@ export default async function LoginPage({
         )}
 
         <div className="space-y-3">
-          <MagicLinkForm />
+          <MagicLinkForm guest={guest} />
         </div>
 
         {!guest && (

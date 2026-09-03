@@ -1,7 +1,7 @@
 "use client";
 
-import { useCallback, useRef, useState } from "react";
-import { Turnstile } from "@/components/turnstile";
+import { useCallback, useRef } from "react";
+import { Turnstile, type TurnstileControls } from "@/components/turnstile";
 import { TURNSTILE_SITE_KEY } from "@/lib/auth/guest";
 
 export interface CaptchaResult {
@@ -25,23 +25,31 @@ export interface CaptchaResult {
  * `render` must be placed in the tree for tokens to arrive.
  */
 export function useCaptcha() {
-  const [, setToken] = useState<string | null>(null);
   const tokenRef = useRef<string | null>(null);
-  const resetRef = useRef<(() => void) | null>(null);
+  const controlsRef = useRef<TurnstileControls | null>(null);
+  const executeRequested = useRef(false);
   const waiters = useRef<Array<(token: string) => void>>([]);
 
   const handleToken = useCallback((token: string | null) => {
     tokenRef.current = token;
-    setToken(token);
     if (token) {
       // Release anyone who submitted before the token arrived.
       waiters.current.splice(0).forEach((resolve) => resolve(token));
     }
   }, []);
 
+  const registerControls = useCallback((controls: TurnstileControls) => {
+    controlsRef.current = controls;
+    if (executeRequested.current) {
+      executeRequested.current = false;
+      controls.execute();
+    }
+  }, []);
+
   /**
-   * Resolves with a token, or ok:false if none arrives in time. Turnstile is
-   * widely blocked by privacy extensions and a blocked script never calls
+   * Resolves with a token, or ok:false if none arrives in time. The challenge
+   * is started here, on demand, rather than when the widget mounts. Turnstile
+   * is widely blocked by privacy extensions and a blocked script never calls
    * back, so waiting forever is not an option.
    */
   const getToken = useCallback(
@@ -50,6 +58,9 @@ export function useCaptcha() {
       if (tokenRef.current) {
         return Promise.resolve({ ok: true, token: tokenRef.current });
       }
+
+      if (controlsRef.current) controlsRef.current.execute();
+      else executeRequested.current = true;
 
       return new Promise((resolve) => {
         const waiter = (token: string) => {
@@ -66,19 +77,17 @@ export function useCaptcha() {
     []
   );
 
-  /** Tokens are single-use, so a failed attempt must discard the old one. */
+  /**
+   * Tokens are single-use, so a failed attempt must discard the old one — and
+   * so must a successful one, or the next submit would replay it.
+   */
   const reset = useCallback(() => {
     tokenRef.current = null;
-    resetRef.current?.();
+    controlsRef.current?.reset();
   }, []);
 
   const render = (
-    <Turnstile
-      onToken={handleToken}
-      registerReset={(fn) => {
-        resetRef.current = fn;
-      }}
-    />
+    <Turnstile onToken={handleToken} registerControls={registerControls} />
   );
 
   return { render, getToken, reset };
