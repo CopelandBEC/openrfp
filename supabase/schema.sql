@@ -681,7 +681,17 @@ grant execute on function public.can_create_response() to authenticated;
 -- storage policy in this file is inert without it. Asserted rather than assumed
 -- because the failure is silent: the policies still create, still look right in
 -- the dashboard, and enforce nothing.
-alter table storage.objects enable row level security;
+--
+-- Checked rather than set: on hosted Supabase storage.objects is owned by
+-- supabase_storage_admin, so `alter table ... enable row level security` fails
+-- with "must be owner of table objects" from the SQL editor and the Management
+-- API alike, and takes the whole (transactional) run down with it.
+do $$
+begin
+  if not (select relrowsecurity from pg_class where oid = 'storage.objects'::regclass) then
+    raise exception 'storage.objects has row-level security disabled; every storage policy in this file would enforce nothing';
+  end if;
+end $$;
 
 -- Both supersede the policies of the same name defined earlier in this file.
 drop policy if exists "users upload own files" on storage.objects;
