@@ -1,5 +1,20 @@
 import { NextResponse } from "next/server";
+import type { EmailOtpType } from "@supabase/supabase-js";
 import { createClient } from "@/lib/supabase/server";
+
+/** Link shapes Supabase can send here, depending on the email template. */
+const OTP_TYPES: readonly EmailOtpType[] = [
+  "magiclink",
+  "signup",
+  "invite",
+  "recovery",
+  "email",
+  "email_change",
+];
+
+function isOtpType(value: string | null): value is EmailOtpType {
+  return value !== null && (OTP_TYPES as readonly string[]).includes(value);
+}
 
 export async function GET(request: Request) {
   const { searchParams, origin } = new URL(request.url);
@@ -21,6 +36,26 @@ export async function GET(request: Request) {
       return NextResponse.redirect(`${origin}${next}`);
     }
     console.error("Auth callback: code exchange failed:", error.message);
+    return NextResponse.redirect(`${origin}/login?error=auth`);
+  }
+
+  // Templates that use {{ .TokenHash }} rather than {{ .ConfirmationURL }}
+  // land here instead. The "save my work" flow depends on this path: the
+  // default Change Email Address template is one of them, and without it a
+  // guest could confirm their address and still not be converted.
+  const tokenHash = searchParams.get("token_hash");
+  const type = searchParams.get("type");
+
+  if (tokenHash && isOtpType(type)) {
+    const supabase = await createClient();
+    const { error } = await supabase.auth.verifyOtp({
+      type,
+      token_hash: tokenHash,
+    });
+    if (!error) {
+      return NextResponse.redirect(`${origin}${next}`);
+    }
+    console.error("Auth callback: OTP verification failed:", error.message);
   }
 
   return NextResponse.redirect(`${origin}/login?error=auth`);

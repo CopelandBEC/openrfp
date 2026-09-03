@@ -36,7 +36,13 @@ export async function extractPdfText(
       textPerPage,
       likelyScanned,
     };
-  } catch {
+  } catch (error) {
+    // The caller reports this to the user as "may need OCR", which is the
+    // right guess for a real scan but hides a broken parser completely.
+    console.error(
+      "PDF text extraction failed:",
+      error instanceof Error ? error.message : error
+    );
     return {
       text: "",
       pageCount: 0,

@@ -2,7 +2,9 @@ import { NextRequest, NextResponse } from "next/server";
 import { createClient } from "@/lib/supabase/server";
 import {
   createAIClient,
+  getMaxCompletionTokens,
   getModelId,
+  parseModelJson,
   truncateForModel,
 } from "@/lib/ai/client";
 import {
@@ -10,6 +12,7 @@ import {
   PROMPT_VERSION,
 } from "@/lib/prompts/generate-rubric";
 import { rateLimitResponse, reserveAICall } from "@/lib/rate-limit";
+import { hashClientIp } from "@/lib/client-ip";
 
 // Model calls routinely run past the platform default; without this the
 // function is killed mid-evaluation and the response is left at 'error'.
@@ -53,7 +56,9 @@ export async function POST(request: NextRequest) {
     );
   }
 
-  const rateLimit = await reserveAICall(supabase, user.id, "generate_rubric");
+  const rateLimit = await reserveAICall(supabase, "generate_rubric", {
+    ipHash: hashClientIp(request),
+  });
   if (!rateLimit.allowed) {
     return rateLimitResponse(rateLimit);
   }
@@ -72,7 +77,7 @@ export async function POST(request: NextRequest) {
         { role: "user", content: userPrompt },
       ],
       response_format: { type: "json_object" },
-      max_tokens: 4000,
+      max_tokens: getMaxCompletionTokens(),
     });
 
     const content = response.choices[0]?.message?.content;
@@ -83,7 +88,7 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    const rubric = JSON.parse(content);
+    const rubric = parseModelJson(content);
 
     // Save rubric to database
     const { data: savedRubric, error: rubricError } = await supabase

@@ -1,6 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createClient } from "@/lib/supabase/server";
 import { extractPdfText } from "@/lib/pdf/extract-text";
+import { isGuest } from "@/lib/auth/guest";
+import { isStorageDenied } from "@/lib/storage-errors";
 
 // Parsing a large PDF can outrun the platform default.
 export const maxDuration = 60;
@@ -57,6 +59,20 @@ export async function POST(request: NextRequest) {
     .upload(fileName, file);
 
   if (uploadError) {
+    // A guest at their file cap is refused by the storage insert policy, one
+    // step before the RFP cap below ever gets a look. That is a limit, not a
+    // fault, and it deserves the same explanation.
+    if (isGuest(user) && isStorageDenied(uploadError)) {
+      return NextResponse.json(
+        {
+          error:
+            "Guest sessions are limited to a few uploaded files. Save your " +
+            "work to an account from the banner above to keep going.",
+        },
+        { status: 403 }
+      );
+    }
+    console.error("Failed to upload RFP file:", uploadError.message);
     return NextResponse.json(
       { error: "Failed to upload file" },
       { status: 500 }
@@ -86,6 +102,25 @@ export async function POST(request: NextRequest) {
     .single();
 
   if (rfpError) {
+    // The file is already in storage at this point, so drop it rather than
+    // leave an object no row will ever reference.
+    await supabase.storage.from("rfp-files").remove([fileName]);
+
+    // A guest who has hit their RFP cap trips the row-level security check on
+    // insert. That is a limit, not a fault, and "Failed to create RFP" would
+    // send them off looking for a broken upload.
+    if (rfpError.code === "42501") {
+      return NextResponse.json(
+        {
+          error:
+            "Guest sessions are limited to a few RFPs. Save your work to an " +
+            "account from the banner above to keep going.",
+        },
+        { status: 403 }
+      );
+    }
+
+    console.error("Failed to create RFP:", rfpError.message);
     return NextResponse.json(
       { error: "Failed to create RFP" },
       { status: 500 }

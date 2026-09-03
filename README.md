@@ -69,13 +69,179 @@ that signs up can spend your provider budget.
 `schema.sql` is idempotent — re-run the whole file to pick up schema or policy
 changes without recreating the project.
 
-**Configure custom SMTP before inviting anyone.** Supabase's built-in email
-service is capped at 2 messages per hour per project, shared across magic links,
-signups and password resets, and is documented as test-only. Sign-in appears
-broken under that cap. Add an SMTP provider under **Authentication → SMTP
-Settings**, then raise **Authentication → Rate Limits**. Also add every origin
-you deploy to (including preview URLs) to **Authentication → URL Configuration →
-Redirect URLs**, or the emailed link will refuse to complete sign-in.
+**Upgrading from a version without guest mode? Re-run `schema.sql` before you
+deploy the new code, not after.** The AI routes now reserve every call through
+`reserve_ai_call` and fail closed, so until that function exists every rubric,
+evaluation and comparison request answers 503 ("Couldn't reserve this
+evaluation just now"). The reverse order is tolerable for a short window: the
+new schema stops the *old* code's usage rows from being written, which relaxes
+the spend cap until the new code is live. Do both in one sitting.
+
+**Add every origin you deploy to** (including preview URLs) under
+**Authentication → URL Configuration → Redirect URLs**, or the emailed link will
+refuse to complete sign-in. Use a wildcard on the path — for example
+`https://your-app.vercel.app/auth/callback**` — because the "save my work"
+confirmation link carries a `?next=` query string, and Supabase matches
+non-Site-URL redirects against this list as glob patterns, so an exact
+`/auth/callback` entry does not cover it.
+
+### Email setup (Resend)
+
+Email is only needed when someone saves their work — a guest can run a whole
+evaluation without it — but sign-in is broken without it, so configure it before
+inviting anyone.
+
+Supabase's built-in email service is capped at **2 messages per hour per
+project**, shared across every kind of auth email, and is documented as
+test-only. Under that cap sign-in simply appears broken. Resend's free tier
+(3,000/month, 100/day) is enough for this and takes a few minutes:
+
+1. Create an account at [resend.com](https://resend.com).
+2. **Domains → Add Domain**, enter a domain you control, and add the DNS records
+   it shows you (SPF and DKIM as `TXT`, plus the `MX` record for bounces). Wait
+   for the domain to read **Verified**.
+   *Skipping this is the usual mistake:* until a domain is verified Resend only
+   delivers to the address that owns the account, so invites appear to send and
+   silently never arrive.
+3. **API Keys → Create API Key**, with Sending access. Copy the `re_…` value —
+   it is shown once.
+4. In Supabase, go to **Authentication → Emails → SMTP Settings**, enable
+   **Custom SMTP**, and enter:
+
+   | Field | Value |
+   | --- | --- |
+   | Host | `smtp.resend.com` |
+   | Port | `465` |
+   | Username | `resend` |
+   | Password | your `re_…` API key |
+   | Sender email | an address at your verified domain, e.g. `no-reply@yourdomain.com` |
+   | Sender name | `OpenRFP` |
+
+5. Raise **Authentication → Rate Limits → Rate limit for sending emails** from
+   the default `2` per hour to something realistic (30 is a reasonable start).
+   *Changing the SMTP settings does not raise this on its own* — it stays at 2
+   until you change it, which looks exactly like the SMTP setup having failed.
+6. Send yourself a magic link to confirm delivery end to end.
+
+Supabase also publishes a Resend integration that fills in the SMTP fields for
+you; the manual route above is the same configuration, and worth knowing when
+something needs debugging.
+
+### Guest sessions
+
+A visitor can upload an RFP, generate a rubric, upload responses and read the
+full comparison without an account. Only *keeping* that work needs an email.
+
+This uses Supabase anonymous sign-in: a guest gets a real row in `auth.users`
+and a real JWT, so every row-level security policy applies to them unchanged.
+When they later choose **Save to an account**, `updateUser({ email })` attaches
+an email to that same user id — nothing is copied or migrated, and the account
+simply stops being anonymous.
+
+Two settings make this work, both under **Authentication**:
+
+1. **Sign In / Providers → Allow anonymous sign-ins: on.** Without it the guest
+   button fails and visitors are pushed back to the magic-link form.
+2. **Attack Protection → enable CAPTCHA, provider Cloudflare Turnstile**, and
+   paste in your Turnstile *secret* key. Put the matching **site** key in
+   `NEXT_PUBLIC_TURNSTILE_SITE_KEY`.
+
+   **Deploy the site key before you flip this switch.** CAPTCHA protection is
+   project-wide — it covers the magic-link endpoint as much as anonymous
+   sign-in — so enabling it while the deployed build has no site key takes
+   *all* sign-in down, not just the guest path. `NEXT_PUBLIC_` values are
+   inlined at build time, so setting the variable in Vercel needs a redeploy
+   to take effect; adding it to an existing deployment's settings alone does
+   nothing.
+
+**Turnstile is not optional on a public deployment.** Guest sessions are the
+only signup path with no email step, and each one carries its own allowance of
+calls against your server-side AI key. Without a CAPTCHA, minting unlimited
+sessions is a page reload. Supabase verifies the token at its own auth endpoint,
+so the check holds even against a caller who bypasses this app's UI entirely.
+Leave the variable unset in local development, where it is only friction.
+
+#### Guest limits
+
+Limits live in the `public.ai_limits` table rather than in environment
+variables, because `reserve_ai_call` is reachable over PostgREST by any
+signed-in caller — a limit sent from the app can only ever *tighten* the one
+stored server-side, never raise it. Defaults:
+
+| Column | Default | Applies to |
+| --- | --- | --- |
+| `member_hourly_limit` | 20 | AI calls/hour for a signed-in account |
+| `guest_hourly_limit` | 6 | AI calls/hour for one guest session |
+| `guest_ip_hourly_limit` | 12 | AI calls/hour for all guests behind one IP |
+| `guest_rfp_limit` | 3 | RFPs one guest session may create |
+| `guest_file_limit` | 12 | Uploaded files, and response rows, per guest |
+
+Change one with an `UPDATE` from the SQL Editor:
+
+```sql
+update public.ai_limits set guest_hourly_limit = 4;
+```
+
+`AI_RATE_LIMIT_PER_HOUR` still works and is applied on top, but only ever as
+the stricter of the two. It defaults to off (0); if you set it, remember that
+raising `member_hourly_limit` above it in the table has no effect.
+
+A guest holds an ordinary JWT, so they can upload straight to the Storage API
+without going through this app. `guest_file_limit` is therefore enforced by the
+storage policy itself, and the `rfp-files` bucket carries a 25 MB size limit and
+a PDF-only MIME allowlist — the upload routes check both, but only for uploads
+that come through the app.
+
+The per-IP ceiling is defence in depth rather than a hard boundary: it needs
+`IP_HASH_SECRET` set to be active at all, it exempts signed-in members so a
+shared office NAT can't lock an organization out of its own account, and since
+this repository is public, someone reading this file could call the reservation
+function directly with a fabricated hash. The guarantees that do hold under
+that are the CAPTCHA on session creation, the per-session cap, and the guest
+RFP cap — the first and last are enforced by Supabase and by RLS, where a
+forged argument cannot reach them.
+
+#### Cleaning up abandoned guests
+
+Guest rows are permanent and count toward your project's monthly active users,
+so sweep them periodically. Run:
+
+```bash
+SUPABASE_URL=https://xxxx.supabase.co \
+SUPABASE_SERVICE_ROLE_KEY=eyJ... \
+node scripts/purge-stale-guests.mjs --older-than "30 days"
+```
+
+Add `--dry-run` to see what would go without deleting anything.
+
+This is a script rather than a cron job in SQL because deleting a row from
+`storage.objects` removes only Storage's metadata — the object itself stays in
+the bucket, and with the row gone nothing is left to find it by. Files have to
+be removed through the Storage API, so the script does that first and then asks
+the database to delete the accounts. As a backstop, `delete_stale_guests()`
+skips any guest that still owns objects, so an interrupted run leaves work to
+finish rather than bytes stranded.
+
+The service role key bypasses row-level security. It belongs in the environment
+of this job only — never in `.env.local`, and never behind a `NEXT_PUBLIC_`
+prefix, which would ship it to the browser.
+
+Staleness is measured from **last activity**, not signup: an anonymous session
+stays valid as long as its refresh token is used, so a guest who started five
+weeks ago may have uploaded something minutes ago. Activity is read from this
+project's own tables (`rfps`, `responses`, `ai_usage`), which misses a guest who
+only ever reads — acceptable on a 30-day window, and the reason unsaved guest
+work is documented as impermanent. A guest who saved is never in scope, since
+attaching an email clears the anonymous flag.
+
+To run it on a schedule, point any scheduler you already have (GitHub Actions,
+a Vercel cron hitting a small admin route, your own machine) at that command.
+Inspect what a sweep would touch from the SQL Editor at any time:
+
+```sql
+select * from public.stale_guest_ids('30 days');
+select * from public.stale_guest_files('30 days');
+```
 
 ### Development
 

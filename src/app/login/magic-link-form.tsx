@@ -2,6 +2,10 @@
 
 import { useState } from "react";
 import { createClient } from "@/lib/supabase/client";
+import {
+  useCaptcha,
+  CAPTCHA_BLOCKED_MESSAGE,
+} from "@/components/use-captcha";
 
 type State =
   | { status: "idle" }
@@ -9,8 +13,20 @@ type State =
   | { status: "sent"; email: string }
   | { status: "error"; message: string };
 
-export function MagicLinkForm() {
+interface MagicLinkFormProps {
+  /**
+   * True when the visitor already holds a guest session. Sign-in from there
+   * must only open an EXISTING account: creating a fresh one for an unknown
+   * email would replace the guest session with an empty account and orphan
+   * every RFP the guest just made. The right path for a new email is "Save to
+   * an account", which attaches it to the guest user instead.
+   */
+  guest?: boolean;
+}
+
+export function MagicLinkForm({ guest = false }: MagicLinkFormProps) {
   const [state, setState] = useState<State>({ status: "idle" });
+  const captcha = useCaptcha();
 
   async function handleSubmit(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -26,6 +42,15 @@ export function MagicLinkForm() {
 
     setState({ status: "sending" });
 
+    // Required whenever CAPTCHA protection is enabled on the Supabase project:
+    // that switch covers the OTP endpoint too, not just anonymous sign-in.
+    // Resolves immediately with a null token when Turnstile isn't configured.
+    const { ok, token } = await captcha.getToken();
+    if (!ok) {
+      setState({ status: "error", message: CAPTCHA_BLOCKED_MESSAGE });
+      return;
+    }
+
     // Request the OTP from the browser (not a server action) so Supabase's
     // PKCE code verifier is stored in THIS browser's cookies — the same
     // browser that will open the emailed link. Server-side requests leave
@@ -36,14 +61,25 @@ export function MagicLinkForm() {
       email,
       options: {
         emailRedirectTo: `${window.location.origin}/auth/callback`,
+        captchaToken: token ?? undefined,
+        shouldCreateUser: !guest,
       },
     });
 
+    // The token is single-use whether or not the request succeeded — a retry,
+    // or a second email, needs a fresh one.
+    captcha.reset();
+
     if (error) {
+      const noSuchAccount =
+        guest &&
+        (error.code === "otp_disabled" ||
+          /signups? not allowed/i.test(error.message));
       setState({
         status: "error",
-        message:
-          error.status === 429
+        message: noSuchAccount
+          ? "No account exists for that email. To keep your guest work, go back and use Save to an account instead."
+          : error.status === 429
             ? "Too many attempts — please wait a few minutes before trying again."
             : "Couldn't send the magic link. Please try again.",
       });
@@ -92,6 +128,8 @@ export function MagicLinkForm() {
           placeholder="you@institution.org"
         />
       </div>
+
+      {captcha.render}
 
       {state.status === "error" && (
         <p className="text-sm text-destructive" role="alert">

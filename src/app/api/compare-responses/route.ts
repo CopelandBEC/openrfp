@@ -1,11 +1,17 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createClient } from "@/lib/supabase/server";
-import { createAIClient, getModelId } from "@/lib/ai/client";
+import {
+  createAIClient,
+  getMaxCompletionTokens,
+  getModelId,
+  parseModelJson,
+} from "@/lib/ai/client";
 import {
   buildComparisonPrompt,
   PROMPT_VERSION,
 } from "@/lib/prompts/compare-responses";
 import { rateLimitResponse, reserveAICall } from "@/lib/rate-limit";
+import { hashClientIp } from "@/lib/client-ip";
 
 // Model calls routinely run past the platform default; without this the
 // function is killed mid-evaluation and the response is left at 'error'.
@@ -104,11 +110,9 @@ export async function POST(request: NextRequest) {
     vendor_name: vendorMap.get(e.response_id) || "Unknown",
   }));
 
-  const rateLimit = await reserveAICall(
-    supabase,
-    user.id,
-    "compare_responses"
-  );
+  const rateLimit = await reserveAICall(supabase, "compare_responses", {
+    ipHash: hashClientIp(request),
+  });
   if (!rateLimit.allowed) {
     return rateLimitResponse(rateLimit);
   }
@@ -129,7 +133,7 @@ export async function POST(request: NextRequest) {
         { role: "user", content: userPrompt },
       ],
       response_format: { type: "json_object" },
-      max_tokens: 6000,
+      max_tokens: getMaxCompletionTokens(),
     });
 
     const content = response.choices[0]?.message?.content;
@@ -137,7 +141,7 @@ export async function POST(request: NextRequest) {
       throw new Error("AI returned no content");
     }
 
-    const comparison = JSON.parse(content);
+    const comparison = parseModelJson(content);
 
     // Save comparison
     const { data: savedComparison, error: comparisonError } = await supabase
