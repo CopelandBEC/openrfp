@@ -1,8 +1,11 @@
 "use client"
 
+import { useEffect, useMemo, useState } from "react"
 import Link from "next/link"
 import { CheckIcon } from "lucide-react"
 
+import { createClient } from "@/lib/supabase/client"
+import { embeddedCount, reachedStages, type StageName } from "@/lib/stage"
 import { cn } from "@/lib/utils"
 
 /**
@@ -23,6 +26,42 @@ export const STAGES = [
 
 export type StageKey = (typeof STAGES)[number]["key"]
 
+/**
+ * Which stages have data behind them, from the rows.
+ *
+ * Until the query answers, only the stages at or behind the current one are
+ * offered, which is what the rail always offered; the ones ahead light up
+ * once it is known they lead somewhere.
+ */
+function useReachedStages(rfpId: string): Set<StageName> {
+  const supabase = useMemo(() => createClient(), [])
+  const [reached, setReached] = useState<Set<StageName>>(() => new Set())
+
+  useEffect(() => {
+    let cancelled = false
+    supabase
+      .from("rfps")
+      .select("rubrics(count), evaluations(count), comparisons(count)")
+      .eq("id", rfpId)
+      .maybeSingle()
+      .then(({ data }) => {
+        if (cancelled || !data) return
+        setReached(
+          reachedStages({
+            hasRubric: embeddedCount(data.rubrics) > 0,
+            evaluationCount: embeddedCount(data.evaluations),
+            hasRanking: embeddedCount(data.comparisons) > 0,
+          })
+        )
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [supabase, rfpId])
+
+  return reached
+}
+
 function StageRail({
   rfpId,
   current,
@@ -31,6 +70,7 @@ function StageRail({
   current: StageKey
 }) {
   const currentIndex = STAGES.findIndex((s) => s.key === current)
+  const reached = useReachedStages(rfpId)
 
   return (
     <nav aria-label="Evaluation progress" className="flex items-center gap-1">
@@ -38,10 +78,13 @@ function StageRail({
         {STAGES.map((stage, index) => {
           const done = index < currentIndex
           const active = index === currentIndex
-          // Stages ahead of the current one are not links: the data they need
-          // does not exist yet, and offering the jump only to land on an empty
-          // state is worse than not offering it.
-          const reachable = done || active
+          // A stage is a link if it is behind us, or if the data it shows
+          // exists. Inferred from the URL alone — behind reachable, ahead not —
+          // a finished evaluation's Decision screen stopped being a link the
+          // moment its owner stepped back to the rubric. Stages with nothing
+          // behind them still are not links: offering the jump only to land
+          // on an empty state is worse than not offering it.
+          const reachable = done || active || reached.has(stage.key)
 
           const content = (
             <>
