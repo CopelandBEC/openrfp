@@ -688,6 +688,18 @@ export default function ComparisonPage({
             title="Loading the comparison"
             notes={["Fetching the ranking and every score behind it."]}
           />
+        ) : error && !comparison ? (
+          // A failed read is not an empty RFP. Every empty state below reads
+          // "nothing here yet", which is the wrong thing to tell someone whose
+          // ranking exists and did not load.
+          <ErrorState
+            message={error}
+            action={
+              <Button variant="outline" onClick={() => fetchData()}>
+                Try again
+              </Button>
+            }
+          />
         ) : !evaluations.length ? (
           <EmptyState
             title="Nothing to compare yet"
