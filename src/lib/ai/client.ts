@@ -8,10 +8,12 @@ export interface AIConfig {
   baseURL: string;
 }
 
+const DEFAULT_MODEL = "accounts/fireworks/models/kimi-k3";
+
 export function getAIConfig(): AIConfig {
   return {
     provider: process.env.AI_PROVIDER || "fireworks",
-    model: process.env.AI_MODEL || "accounts/fireworks/models/kimi-k3",
+    model: process.env.AI_MODEL || DEFAULT_MODEL,
     apiKey: process.env.FIREWORKS_API_KEY || process.env.AI_API_KEY || "",
     baseURL: process.env.AI_BASE_URL || "https://api.fireworks.ai/inference/v1",
   };
@@ -50,10 +52,14 @@ const REASONING_EFFORT_DEFAULTS: Record<AITask, string> = {
  * described on `getMaxCompletionTokens` below. Left unset, every call paid for
  * that, including the ones that are just applying an existing rubric.
  *
- * Not every model accepts this parameter and AI_MODEL is meant to be swapped
- * freely, so setting the variable to an empty string omits it from the request.
- * Any other value is sent as given, so a model with its own vocabulary of
- * effort levels needs no code change here.
+ * The defaults were tuned for the default model and are applied only to it.
+ * Not every model accepts this parameter — an OpenAI-compatible endpoint that
+ * does not rejects the whole request — and AI_MODEL is meant to be swapped
+ * freely, so a deployment that has set it keeps working as it did: nothing is
+ * sent unless the matching AI_REASONING_EFFORT_* variable says what to send.
+ * A value is sent as given, so a model with its own vocabulary of effort levels
+ * needs no code change here; an empty string omits the parameter for the
+ * default model too.
  */
 export function getReasoningEffort(task: AITask): ReasoningEffort | undefined {
   const raw =
@@ -62,7 +68,9 @@ export function getReasoningEffort(task: AITask): ReasoningEffort | undefined {
       : task === "evaluation"
         ? process.env.AI_REASONING_EFFORT_EVALUATION
         : process.env.AI_REASONING_EFFORT_COMPARISON;
-  const value = (raw ?? REASONING_EFFORT_DEFAULTS[task]).trim();
+  const fallback =
+    getModelId() === DEFAULT_MODEL ? REASONING_EFFORT_DEFAULTS[task] : "";
+  const value = (raw ?? fallback).trim();
   return value === "" ? undefined : (value as ReasoningEffort);
 }
 

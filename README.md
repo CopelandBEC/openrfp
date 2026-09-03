@@ -296,8 +296,11 @@ JSON starts, and most models default to their highest effort. Three variables
 set it per call site — `AI_REASONING_EFFORT_RUBRIC`,
 `AI_REASONING_EFFORT_EVALUATION` and `AI_REASONING_EFFORT_COMPARISON` — with
 the middle one, the call that runs once per proposal, deliberately low: it is
-applying a rubric that already exists. Set a variable to an empty string to
-omit the parameter, for a model that does not accept it.
+applying a rubric that already exists. Those defaults apply only to the default
+model. If you set `AI_MODEL`, nothing is sent unless you set these too — an
+OpenAI-compatible endpoint that does not accept the parameter rejects the whole
+request, so a model swap must not start sending it unasked. Set a variable to
+an empty string to omit the parameter for the default model as well.
 
 Two things beyond model choice matter as much:
 
