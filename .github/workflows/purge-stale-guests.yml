@@ -28,6 +28,13 @@ on:
         type: boolean
         default: false
 
+# Public repository: run logs are world-readable, so the script prints counts
+# only, and the job gets a read-only GITHUB_TOKEN. Secrets are never exposed
+# to pull requests — this workflow has no pull_request trigger, and forks do
+# not receive them.
+permissions:
+  contents: read
+
 jobs:
   purge:
     runs-on: ubuntu-latest
