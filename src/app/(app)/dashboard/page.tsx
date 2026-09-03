@@ -8,6 +8,7 @@ import { AppHeader } from "@/components/app-shell";
 import { EmptyState } from "@/components/stage-state";
 import { Button } from "@/components/ui/button";
 import { isGuest } from "@/lib/auth/guest";
+import { deriveStage, embeddedCount, firstEmbedded } from "@/lib/stage";
 
 export default async function DashboardPage({
   searchParams,
@@ -24,11 +25,16 @@ export default async function DashboardPage({
   } = await supabase.auth.getUser();
   const guest = isGuest(user);
 
-  // The response count feeds the delete confirmation, so the user is told what
-  // goes with the RFP before agreeing.
+  // The counts do two jobs: the delete confirmation tells the user what goes
+  // with an RFP before they agree, and the card derives which stage the
+  // evaluation is actually at. `rfps.status` cannot answer the second — see
+  // lib/stage.ts — so the rows are counted instead. RLS scopes every embedded
+  // relation to the caller exactly as it scopes the parent.
   const { data: rfps } = await supabase
     .from("rfps")
-    .select("id, title, description, status, created_at, responses(count)")
+    .select(
+      "id, title, description, created_at, rubrics(edited_by_user), responses(count), evaluations(count), comparisons(count)"
+    )
     .order("created_at", { ascending: false });
 
   return (
@@ -82,20 +88,30 @@ export default async function DashboardPage({
         <div className="mt-8">
           {rfps && rfps.length > 0 ? (
             <div className="grid gap-4">
-              {rfps.map((rfp) => (
-                <RfpCard
-                  key={rfp.id}
-                  rfp={{
-                    id: rfp.id,
-                    title: rfp.title,
-                    description: rfp.description,
-                    status: rfp.status,
-                    responseCount:
-                      (rfp.responses as unknown as { count: number }[] | null)?.[0]
-                        ?.count ?? 0,
-                  }}
-                />
-              ))}
+              {rfps.map((rfp) => {
+                const rubric = firstEmbedded<{ edited_by_user: boolean }>(
+                  rfp.rubrics
+                );
+                const responseCount = embeddedCount(rfp.responses);
+                return (
+                  <RfpCard
+                    key={rfp.id}
+                    rfp={{
+                      id: rfp.id,
+                      title: rfp.title,
+                      description: rfp.description,
+                      responseCount,
+                      stage: deriveStage({
+                        hasRubric: rubric != null,
+                        rubricAccepted: rubric?.edited_by_user === true,
+                        responseCount,
+                        evaluationCount: embeddedCount(rfp.evaluations),
+                        hasComparison: embeddedCount(rfp.comparisons) > 0,
+                      }),
+                    }}
+                  />
+                );
+              })}
             </div>
           ) : (
             <EmptyState

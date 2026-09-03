@@ -7,6 +7,7 @@ import {
   FileJsonIcon,
   RotateCcwIcon,
   SheetIcon,
+  TriangleAlertIcon,
   TrophyIcon,
 } from "lucide-react";
 import { createClient } from "@/lib/supabase/client";
@@ -312,8 +313,55 @@ export default function ComparisonPage({
     return [];
   }, [comparison]);
 
-  const winner = sortedRanking[0] ?? null;
-  const runnerUp = sortedRanking[1] ?? null;
+  /**
+   * The ranked field, with live scores.
+   *
+   * `comparisons.ranking` is a snapshot taken when the comparison ran. An
+   * override on the evaluations screen writes `evaluations.scores` and
+   * `evaluations.overall_score` and never touches that snapshot, so reading
+   * the overall from one place and the criterion scores from the other — which
+   * is what the exports did — could show criterion scores whose weighted total
+   * did not equal the stated overall.
+   *
+   * Everything on this page and in every export now reads the overall from
+   * here: the live evaluation where there is one, the snapshot only as a
+   * fallback. The rank stays as ranked, because re-sorting silently would
+   * present an order the model never actually justified — so where the numbers
+   * have moved, we say so instead.
+   */
+  const rankedVendors = useMemo(
+    () =>
+      sortedRanking.map((entry) => {
+        const evaluation = evalByResponseId.get(entry.response_id);
+        const rankedScore = entry.overall_score;
+        const score = evaluation?.overall_score ?? rankedScore;
+        return {
+          responseId: entry.response_id,
+          name: nameFor(entry),
+          rank: entry.rank,
+          rationale: entry.rationale,
+          summary: evaluation?.summary,
+          evaluation,
+          score,
+          rankedScore,
+          // Half a point of drift is a real edit, not float noise.
+          moved:
+            score != null &&
+            rankedScore != null &&
+            Math.abs(score - rankedScore) > 0.05,
+        };
+      }),
+    [sortedRanking, evalByResponseId, nameFor]
+  );
+
+  /** True once any score has been changed since the ranking was produced. */
+  const rankingStale = useMemo(
+    () => rankedVendors.some((v) => v.moved),
+    [rankedVendors]
+  );
+
+  const winner = rankedVendors[0] ?? null;
+  const runnerUp = rankedVendors[1] ?? null;
 
   /**
    * The gap between first and second.
@@ -322,8 +370,7 @@ export default function ComparisonPage({
    * layout never computed it: a two-point win and a thirty-point win looked
    * identical in a ranked table.
    */
-  const margin =
-    winner && runnerUp ? winner.overall_score - runnerUp.overall_score : null;
+  const margin = winner && runnerUp ? winner.score - runnerUp.score : null;
   const tooCloseToCall = margin != null && margin < CLOSE_MARGIN;
 
   // -- the export payload ---------------------------------------------------
@@ -331,8 +378,8 @@ export default function ComparisonPage({
   const reportData = useMemo<ReportData | null>(() => {
     if (!comparison) return null;
 
-    const vendors: ReportVendor[] = sortedRanking.map((entry) => {
-      const evaluation = evalByResponseId.get(entry.response_id);
+    const vendors: ReportVendor[] = rankedVendors.map((entry) => {
+      const evaluation = entry.evaluation;
       const scores: ReportVendor["scores"] = {};
       for (const criterion of criteriaList) {
         const raw = evaluation?.scores?.[criterion.id];
@@ -348,10 +395,11 @@ export default function ComparisonPage({
         };
       }
       return {
-        responseId: entry.response_id,
-        vendorName: nameFor(entry),
+        responseId: entry.responseId,
+        vendorName: entry.name,
         rank: entry.rank,
-        overallScore: entry.overall_score,
+        // The live overall, so it agrees with the criterion scores beside it.
+        overallScore: entry.score,
         rankRationale: entry.rationale,
         summary: evaluation?.summary,
         strengths: evaluation?.strengths ?? [],
@@ -375,6 +423,7 @@ export default function ComparisonPage({
       })),
       vendors,
       comparativeAnalysis: comparison.comparative_analysis,
+      rankingStale,
       closeCalls: (comparison.close_calls ?? []).map((cc) => ({
         criterionName: cc.criterion_name,
         note: cc.note,
@@ -387,10 +436,9 @@ export default function ComparisonPage({
     };
   }, [
     comparison,
-    sortedRanking,
-    evalByResponseId,
+    rankedVendors,
+    rankingStale,
     criteriaList,
-    nameFor,
     rfpTitle,
     interviewFocusAreas,
   ]);
@@ -485,7 +533,7 @@ export default function ComparisonPage({
                       Recommended
                     </p>
                     <h2 className="mt-2 text-2xl font-bold tracking-tight text-foreground">
-                      {nameFor(winner)}
+                      {winner.name}
                     </h2>
                     {winner.rationale && (
                       <p className="mt-2 max-w-xl text-sm leading-relaxed text-foreground">
@@ -494,7 +542,7 @@ export default function ComparisonPage({
                     )}
                   </div>
                   <ScoreMeter
-                    value={winner.overall_score}
+                    value={winner.score}
                     label={`Weighted across ${criteriaList.length} criteria`}
                     className="w-52 shrink-0"
                   />
@@ -511,7 +559,7 @@ export default function ComparisonPage({
                       <>
                         <span className="font-medium">Too close to call:</span>{" "}
                         only {formatScore(margin)} points clear of{" "}
-                        {nameFor(runnerUp)}. Treat this as where to start the
+                        {runnerUp.name}. Treat this as where to start the
                         interviews, not as the answer.
                       </>
                     ) : (
@@ -519,7 +567,7 @@ export default function ComparisonPage({
                         <span className="font-medium">
                           {formatScore(margin)} points clear
                         </span>{" "}
-                        of {nameFor(runnerUp)}.
+                        of {runnerUp.name}.
                       </>
                     )}
                   </p>
@@ -535,14 +583,46 @@ export default function ComparisonPage({
              * a cell, which made every row four lines tall and the ranking
              * itself hard to see.
              * --------------------------------------------------------- */}
+            {/* A changed score does not re-sort the list — the model justified
+                the order it gave — so the drift is stated instead, both here
+                and in the exported report. */}
+            {rankingStale && (
+              <div
+                role="note"
+                className="animate-reveal mt-8 flex flex-wrap items-center justify-between gap-3 rounded-lg bg-muted px-4 py-3"
+              >
+                <p className="flex items-start gap-2 text-sm text-foreground">
+                  <TriangleAlertIcon
+                    className="mt-0.5 size-4 shrink-0"
+                    style={{ color: "var(--status-warning)" }}
+                    aria-hidden="true"
+                  />
+                  <span>
+                    <span className="font-medium">
+                      A score has changed since this ranking.
+                    </span>{" "}
+                    The scores below are current; the order is the one the model
+                    gave before the edit.
+                  </span>
+                </p>
+                <Button
+                  size="sm"
+                  onClick={generateComparison}
+                  disabled={generating}
+                >
+                  {generating ? "Re-ranking…" : "Re-rank"}
+                </Button>
+              </div>
+            )}
+
             <h2 className="mt-10 text-sm font-semibold text-foreground">
               Ranking
             </h2>
             <Accordion className="mt-3 gap-2.5">
-              {sortedRanking.map((entry, index) => (
+              {rankedVendors.map((entry, index) => (
                 <AccordionItem
-                  key={entry.response_id}
-                  value={entry.response_id}
+                  key={entry.responseId}
+                  value={entry.responseId}
                   className="animate-reveal"
                   style={{ ["--reveal-i" as string]: index }}
                 >
@@ -552,22 +632,22 @@ export default function ComparisonPage({
                     </span>
                     <span className="min-w-0 flex-1">
                       <span className="block truncate text-sm font-medium text-foreground">
-                        {nameFor(entry)}
+                        {entry.name}
                       </span>
                       <span className="mt-1.5 flex items-center gap-2">
                         <ScoreBar
-                          percent={entry.overall_score}
+                          percent={entry.score}
                           index={index}
                           thickness="thin"
                           className="max-w-48"
                         />
                         <span className="shrink-0 text-xs font-semibold tabular-nums text-foreground">
-                          {formatScore(entry.overall_score)}
+                          {formatScore(entry.score)}
                         </span>
                       </span>
                     </span>
                     <TierChip
-                      tier={scoreTier(entry.overall_score)}
+                      tier={scoreTier(entry.score)}
                       size="sm"
                       className="shrink-0"
                     />
@@ -579,9 +659,15 @@ export default function ComparisonPage({
                           {entry.rationale}
                         </p>
                       )}
-                      {evalByResponseId.get(entry.response_id)?.summary && (
+                      {entry.summary && (
                         <p className="text-sm leading-relaxed text-muted-foreground">
-                          {evalByResponseId.get(entry.response_id)?.summary}
+                          {entry.summary}
+                        </p>
+                      )}
+                      {entry.moved && (
+                        <p className="text-sm text-foreground">
+                          Scored {formatScore(entry.rankedScore)} when this
+                          ranking was produced, {formatScore(entry.score)} now.
                         </p>
                       )}
                       <Button

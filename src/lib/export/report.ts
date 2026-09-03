@@ -62,6 +62,14 @@ export interface ReportData {
   comparativeAnalysis?: string;
   closeCalls: ReportCloseCall[];
   interviewFocusAreas: string[];
+  /**
+   * Set when a score has been changed since the ranking was produced.
+   *
+   * The scores in the report are always the current ones; this says the order
+   * around them may predate an edit. A committee reading a printed ranking has
+   * no way to find that out otherwise.
+   */
+  rankingStale?: boolean;
 }
 
 // ---------------------------------------------------------------------------
@@ -240,6 +248,12 @@ p { margin: 0; }
 .hero-score span { font-size: 15px; font-weight: 500; color: var(--ink-soft); }
 .verdict-why { margin-top: 14px; font-size: 14px; }
 .margin-note { margin-top: 10px; font-size: 13px; color: var(--ink-soft); }
+.stale {
+  margin-top: 14px; padding: 12px 14px; border-radius: 10px;
+  background: var(--surface-sunk); border-left: 3px solid var(--warning);
+  font-size: 13px;
+}
+.verdict .stale { background: var(--surface); }
 
 /* -- ranked list -------------------------------------------------------- */
 .rank-row {
@@ -540,6 +554,13 @@ export function buildReportHtml(data: ReportData): string {
     )
     .join("");
 
+  const stale = data.rankingStale
+    ? `<p class="stale"><strong>A score changed after this ranking was produced.</strong>
+       Every score in this report is the current one; the order is the one the
+       model gave before that edit. Re-rank in OpenRFP to bring the two back
+       into line.</p>`
+    : "";
+
   const interview = data.interviewFocusAreas.length
     ? `
     <h2>Ask at interview</h2>
@@ -603,6 +624,7 @@ export function buildReportHtml(data: ReportData): string {
   ${verdict}
 
   <h2>Ranking</h2>
+  ${stale}
   ${rankRows}
 
   ${interview}

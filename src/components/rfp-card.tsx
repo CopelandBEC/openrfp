@@ -7,40 +7,18 @@ import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { deleteRfp, updateRfp } from "@/app/(app)/dashboard/actions";
 import { cn } from "@/lib/utils";
-
-/**
- * Where an RFP has got to, and where clicking it should land.
- *
- * The card used to show the raw `status` column in small caps — "rubric_ready"
- * — and always link to the rubric, so returning to a half-finished evaluation
- * meant re-navigating the whole flow. The four database states map exactly
- * onto the four stages, so the card can say which one is next and go there.
- */
-const STAGE = {
-  draft: { step: 1, label: "Needs a rubric", next: "rubric" },
-  rubric_ready: { step: 2, label: "Needs proposals", next: "responses" },
-  evaluating: { step: 3, label: "Scoring", next: "evaluations" },
-  complete: { step: 4, label: "Decided", next: "comparison" },
-} as const;
-
-const TOTAL_STEPS = 4;
-
-function stageFor(status: string) {
-  return (
-    STAGE[status as keyof typeof STAGE] ?? {
-      step: 1,
-      label: status,
-      next: "rubric",
-    }
-  );
-}
+import { TOTAL_STAGES, type Stage } from "@/lib/stage";
 
 export interface RfpSummary {
   id: string;
   title: string;
   description: string | null;
-  status: string;
   responseCount: number;
+  /**
+   * Derived from the rows, not from `rfps.status`, which reports
+   * `rubric_ready` from the moment a rubric is generated. See lib/stage.ts.
+   */
+  stage: Stage;
 }
 
 type Mode = "view" | "edit" | "confirm-delete";
@@ -163,8 +141,7 @@ export function RfpCard({ rfp }: { rfp: RfpSummary }) {
       ? `${contents.slice(0, -1).join(", ")} and ${contents[contents.length - 1]}`
       : contents[0];
 
-  const stage = stageFor(rfp.status);
-  const finished = stage.step === TOTAL_STEPS;
+  const { stage } = rfp;
 
   return (
     <div className="group/rfp rounded-xl bg-card p-4 ring-1 ring-foreground/10 transition-shadow hover:shadow-sm">
@@ -182,7 +159,7 @@ export function RfpCard({ rfp }: { rfp: RfpSummary }) {
           {/* Four pips and a word: how far along, and what happens next. */}
           <div className="mt-3 flex items-center gap-2.5">
             <span className="flex items-center gap-1" aria-hidden="true">
-              {Array.from({ length: TOTAL_STEPS }, (_, i) => (
+              {Array.from({ length: TOTAL_STAGES }, (_, i) => (
                 <span
                   key={i}
                   className={cn(
@@ -193,7 +170,7 @@ export function RfpCard({ rfp }: { rfp: RfpSummary }) {
               ))}
             </span>
             <span className="flex items-center gap-1 text-xs font-medium text-muted-foreground">
-              {finished && (
+              {stage.done && (
                 <CheckIcon
                   className="size-3"
                   style={{ color: "var(--status-good)" }}
