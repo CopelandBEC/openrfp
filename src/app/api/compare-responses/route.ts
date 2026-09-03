@@ -14,7 +14,7 @@ import {
   PROMPT_VERSION,
 } from "@/lib/prompts/compare-responses";
 import { rateLimitResponse, reserveAICall } from "@/lib/rate-limit";
-import { scoredAgainstCurrentRubric } from "@/lib/stage";
+import { rankingDescribesField, scoredAgainstCurrentRubric } from "@/lib/stage";
 import { hashClientIp } from "@/lib/client-ip";
 
 // Model calls routinely run past the platform default; without this the
@@ -215,6 +215,26 @@ export async function POST(request: NextRequest) {
     }
 
     const comparison = parseModelJson(content);
+
+    // The model was asked for one entry per proposal. Anything else — a vendor
+    // listed twice, one missing, one invented — would render as a ranking and
+    // read as decided, so it is refused here rather than repaired downstream.
+    if (!rankingDescribesField(comparison.ranking, [...scoredIds])) {
+      console.error("Comparison ranking does not match the field", {
+        rfp_id,
+        ranked: Array.isArray(comparison.ranking)
+          ? comparison.ranking.length
+          : null,
+        scored: scoredIds.size,
+      });
+      return NextResponse.json(
+        {
+          error:
+            "The model returned a ranking that does not match the proposals. Please try again.",
+        },
+        { status: 502 }
+      );
+    }
 
     // Save comparison
     const { data: savedComparison, error: comparisonError } = await supabase

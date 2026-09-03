@@ -292,19 +292,35 @@ function sameSet(a: string[], b: string[]): boolean {
  *
  * The column holds whatever the model emitted, straight from `parseModelJson`
  * into jsonb, so its shape is a convention rather than a guarantee. Anything
- * that is not an array of entries carrying a string `response_id` reads as
- * "no usable ranking", which the stage then reports as needing a re-rank
- * rather than as decided.
+ * that is not an array of entries carrying a distinct string `response_id`
+ * reads as "no usable ranking", which the stage then reports as needing a
+ * re-rank rather than as decided. Distinct matters: a ranking of `A, A, B`
+ * mentions every proposal, and a set comparison would call it complete while
+ * the page showed one vendor twice.
  */
 export function rankedResponseIdsOf(ranking: unknown): string[] | null {
   if (!Array.isArray(ranking)) return null;
   const ids: string[] = [];
   for (const entry of ranking) {
     const id = (entry as { response_id?: unknown } | null)?.response_id;
-    if (typeof id !== "string") return null;
+    if (typeof id !== "string" || ids.includes(id)) return null;
     ids.push(id);
   }
   return ids;
+}
+
+/**
+ * Whether a ranking is exactly one entry per scored proposal — the shape the
+ * compare route asks the model for, checked before the row is saved so that
+ * a duplicated or invented vendor never reaches the screens. Model JSON is
+ * stored as emitted, so this is the only place its shape is enforced.
+ */
+export function rankingDescribesField(
+  ranking: unknown,
+  evaluatedResponseIds: string[]
+): boolean {
+  const ids = rankedResponseIdsOf(ranking);
+  return ids != null && sameSet(ids, evaluatedResponseIds);
 }
 
 /**

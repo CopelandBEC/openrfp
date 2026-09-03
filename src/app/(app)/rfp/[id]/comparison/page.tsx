@@ -33,6 +33,7 @@ import { ScoreGrid } from "@/components/viz/score-grid";
 import { formatScore, scoreTier, toPercent } from "@/lib/score";
 import {
   evaluationRevisionsOf,
+  rankedResponseIdsOf,
   sameInstant,
   scoredAgainstCurrentRubric,
 } from "@/lib/stage";
@@ -265,9 +266,30 @@ export default function ComparisonPage({
 
   // -- derived data ---------------------------------------------------------
 
+  /**
+   * Whether the saved ranking has the shape the route asked for: one entry
+   * per proposal, each with a response id. The route refuses anything else
+   * before saving, so this is only true of rows from before it did — but a
+   * ranking that lists a vendor twice must not render that vendor twice, or
+   * call the duplicate its own runner-up.
+   */
+  const rankingMalformed =
+    comparison != null && rankedResponseIdsOf(comparison.ranking) == null;
+
   const sortedRanking = useMemo(() => {
-    if (!comparison?.ranking) return [];
-    return [...comparison.ranking].sort((a, b) => a.rank - b.rank);
+    if (!Array.isArray(comparison?.ranking)) return [];
+    const seen = new Set<string>();
+    return [...comparison.ranking]
+      .sort((a, b) => a.rank - b.rank)
+      .filter((entry) => {
+        // First occurrence by rank wins; the malformed-ranking notice says
+        // the rest.
+        if (typeof entry?.response_id !== "string" || seen.has(entry.response_id)) {
+          return false;
+        }
+        seen.add(entry.response_id);
+        return true;
+      });
   }, [comparison]);
 
   const criteriaList = useMemo<RubricCriterion[]>(() => {
@@ -484,6 +506,7 @@ export default function ComparisonPage({
   const rubricChangedSinceScoring = scoredAgainstOldRubric.length > 0;
 
   const rankingStale =
+    rankingMalformed ||
     rubricChangedSinceScoring ||
     awaitingScoreSinceRanking.length > 0 ||
     evaluationsEditedSinceRanking ||
@@ -524,6 +547,11 @@ export default function ComparisonPage({
   /** Said in one line each, on the page and in the exported report. */
   const stalenessReasons = useMemo(() => {
     const reasons: string[] = [];
+    if (rankingMalformed) {
+      reasons.push(
+        "This ranking lists a proposal twice or has an entry with no proposal behind it; only the first mention of each is shown."
+      );
+    }
     if (scoredAgainstOldRubric.length > 0) {
       reasons.push(
         `The rubric changed after ${scoredAgainstOldRubric.length} proposal${
@@ -574,6 +602,7 @@ export default function ComparisonPage({
     }
     return reasons;
   }, [
+    rankingMalformed,
     rankingSaw,
     scoredAgainstOldRubric,
     awaitingScoreSinceRanking,
