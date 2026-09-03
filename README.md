@@ -73,9 +73,9 @@ changes without recreating the project.
 `evaluations` and `comparisons`, not after.** The dashboard reads those columns
 to tell a current ranking from one that predates a score, and PostgREST
 rejects the whole query when a selected column is missing — so until the
-migration is applied the dashboard renders its empty state and the owner's RFPs
-appear to have vanished. Nothing is lost and applying the schema restores them,
-but it is an alarming few minutes. The backfill sets `updated_at` from
+migration is applied the dashboard cannot list any RFPs. It says so, with the
+database's message, rather than rendering its empty state; nothing is lost and
+applying the schema restores them. The backfill sets `updated_at` from
 `created_at`, so existing rows read as last changed when they were made rather
 than all reading as "changed just now".
 

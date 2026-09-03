@@ -406,8 +406,8 @@ export default function ComparisonPage({
     if (!rankedAt) return false;
     return evaluations.some((e) => {
       const editedAt = e.updated_at ?? e.created_at;
-      // A row written within a second of the ranking is the ranking's own
-      // input, not an edit to it.
+      // A row written at or before the ranking is the ranking's own input,
+      // not an edit to it; only a strictly newer one counts.
       return editedAt != null && editedAt > rankedAt;
     });
   }, [comparison, evaluations]);

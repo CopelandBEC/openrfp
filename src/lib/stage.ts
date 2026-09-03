@@ -29,7 +29,13 @@ export interface StageInputs {
    */
   rubricAccepted: boolean;
   responseCount: number;
-  evaluationCount: number;
+  /**
+   * The `response_id` of every scored proposal.
+   *
+   * Ids rather than a count, because a saved ranking is a snapshot of a set,
+   * and a count cannot tell one set from another of the same size.
+   */
+  evaluatedResponseIds: string[];
   /**
    * When the ranking was last written, or null if there isn't one.
    *
@@ -49,6 +55,18 @@ export interface StageInputs {
    * weighted amount leaves the total identical, but the row was still touched.
    */
   latestEvaluationAt: string | null;
+  /**
+   * The `response_id` of every entry in the saved ranking, or null if there
+   * isn't one.
+   *
+   * Timestamps cannot see a proposal being removed. Deleting a response
+   * cascades its evaluation away, and nothing left behind is any newer than
+   * the ranking — so on times alone an RFP reads "Decided" while its ranking
+   * still lists a vendor who has left the field. The comparison screen catches
+   * this by set difference, and the dashboard has to ask the same question or
+   * the two disagree about the same RFP.
+   */
+  rankedResponseIds: string[] | null;
 }
 
 export interface Stage {
@@ -68,9 +86,10 @@ export function deriveStage({
   hasRubric,
   rubricAccepted,
   responseCount,
-  evaluationCount,
+  evaluatedResponseIds,
   comparisonAt,
   latestEvaluationAt,
+  rankedResponseIds,
 }: StageInputs): Stage {
   // Prerequisites first, and "decided" last. Checked the other way round, an
   // existing comparison row shouted down every other fact: regenerating the
@@ -97,14 +116,19 @@ export function deriveStage({
       done: false,
     };
   }
-  if (evaluationCount < responseCount) {
+  if (evaluatedResponseIds.length < responseCount) {
     return { step: 2, label: "Needs scoring", next: "responses", done: false };
   }
   // Everything upstream is satisfied, so a ranking that has seen every score
-  // is the finished article. One that predates a score has not.
+  // is the finished article. One that predates a score has not, and neither
+  // has one whose set of vendors is not the set that is scored now: a
+  // proposal removed after ranking leaves no newer timestamp behind, so the
+  // set has to be checked as well as the times.
   const comparisonIsCurrent =
     comparisonAt != null &&
-    (latestEvaluationAt == null || latestEvaluationAt <= comparisonAt);
+    (latestEvaluationAt == null || latestEvaluationAt <= comparisonAt) &&
+    rankedResponseIds != null &&
+    sameSet(rankedResponseIds, evaluatedResponseIds);
   if (comparisonIsCurrent) {
     return { step: 4, label: "Decided", next: "comparison", done: true };
   }
@@ -114,6 +138,34 @@ export function deriveStage({
     next: "evaluations",
     done: false,
   };
+}
+
+function sameSet(a: string[], b: string[]): boolean {
+  const setA = new Set(a);
+  const setB = new Set(b);
+  if (setA.size !== setB.size) return false;
+  for (const id of setA) if (!setB.has(id)) return false;
+  return true;
+}
+
+/**
+ * Pull the response ids out of a saved `comparisons.ranking`.
+ *
+ * The column holds whatever the model emitted, straight from `parseModelJson`
+ * into jsonb, so its shape is a convention rather than a guarantee. Anything
+ * that is not an array of entries carrying a string `response_id` reads as
+ * "no usable ranking", which the stage then reports as needing a re-rank
+ * rather than as decided.
+ */
+export function rankedResponseIdsOf(ranking: unknown): string[] | null {
+  if (!Array.isArray(ranking)) return null;
+  const ids: string[] = [];
+  for (const entry of ranking) {
+    const id = (entry as { response_id?: unknown } | null)?.response_id;
+    if (typeof id !== "string") return null;
+    ids.push(id);
+  }
+  return ids;
 }
 
 /**
