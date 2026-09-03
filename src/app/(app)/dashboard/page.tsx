@@ -1,6 +1,7 @@
 import { redirect } from "next/navigation";
 import { createClient } from "@/lib/supabase/server";
 import { SignOutButton } from "@/components/sign-out-button";
+import { RfpCard } from "@/components/rfp-card";
 import { isGuest } from "@/lib/auth/guest";
 
 export default async function DashboardPage({
@@ -18,9 +19,11 @@ export default async function DashboardPage({
   } = await supabase.auth.getUser();
   const guest = isGuest(user);
 
+  // The response count feeds the delete confirmation, so the user is told what
+  // goes with the RFP before agreeing.
   const { data: rfps } = await supabase
     .from("rfps")
-    .select("id, title, description, status, created_at")
+    .select("id, title, description, status, created_at, responses(count)")
     .order("created_at", { ascending: false });
 
   return (
@@ -80,23 +83,18 @@ export default async function DashboardPage({
           {rfps && rfps.length > 0 ? (
             <div className="grid gap-4">
               {rfps.map((rfp) => (
-                <a
+                <RfpCard
                   key={rfp.id}
-                  href={`/rfp/${rfp.id}/rubric`}
-                  className="block rounded-lg border p-4 transition-colors hover:bg-muted/30"
-                >
-                  <div className="flex items-center justify-between">
-                    <h2 className="font-semibold">{rfp.title}</h2>
-                    <span className="text-xs uppercase text-muted-foreground">
-                      {rfp.status}
-                    </span>
-                  </div>
-                  {rfp.description && (
-                    <p className="mt-1 text-sm text-muted-foreground">
-                      {rfp.description}
-                    </p>
-                  )}
-                </a>
+                  rfp={{
+                    id: rfp.id,
+                    title: rfp.title,
+                    description: rfp.description,
+                    status: rfp.status,
+                    responseCount:
+                      (rfp.responses as unknown as { count: number }[] | null)?.[0]
+                        ?.count ?? 0,
+                  }}
+                />
               ))}
             </div>
           ) : (
