@@ -75,6 +75,8 @@ interface Comparison {
   prompt_version?: string;
   created_at: string;
   updated_at?: string | null;
+  /** The newest evaluation this ranking saw; see lib/stage.ts. */
+  evaluations_as_of?: string | null;
   interview_focus_areas?: string[];
 }
 
@@ -395,7 +397,7 @@ export default function ComparisonPage({
   );
 
   /**
-   * Whether any evaluation has been written since the ranking was.
+   * Whether any evaluation has been written since the ranking read its inputs.
    *
    * This is the authoritative signal, and it supersedes comparing overall
    * scores. Two offsetting criterion edits — one up, one down, same weighted
@@ -403,19 +405,23 @@ export default function ComparisonPage({
    * while the exported criterion values no longer match the rationale and
    * close calls the model wrote. The row's update time moved either way.
    *
-   * Both sides must be `updated_at`: an override edits in place and a re-rank
-   * upserts, so neither creation time advances when the thing itself changes.
+   * The ranking side is `evaluations_as_of`, the newest evaluation the compare
+   * route read before it called the model — not the row's `updated_at`, which
+   * is when the ranking was saved, a model call later. An override landing in
+   * that window is newer than what the ranking saw and older than the row. A
+   * ranking that does not say what it saw reads as out of date.
    */
+  const rankingSawUpTo = comparison?.evaluations_as_of ?? null;
   const evaluationsEditedSinceRanking = useMemo(() => {
-    const rankedAt = comparison?.updated_at ?? comparison?.created_at;
-    if (!rankedAt) return false;
+    if (!comparison) return false;
+    if (rankingSawUpTo == null) return evaluations.length > 0;
     return evaluations.some((e) => {
       const editedAt = e.updated_at ?? e.created_at;
-      // A row written at or before the ranking is the ranking's own input,
-      // not an edit to it; only a strictly newer one counts.
-      return editedAt != null && editedAt > rankedAt;
+      // A row the ranking saw is its input, not an edit to it; only a strictly
+      // newer one counts.
+      return editedAt != null && editedAt > rankingSawUpTo;
     });
-  }, [comparison, evaluations]);
+  }, [comparison, rankingSawUpTo, evaluations]);
 
   /**
    * Whether live scores would put the field in a different order.
@@ -494,11 +500,14 @@ export default function ComparisonPage({
     } else if (evaluationsEditedSinceRanking) {
       // The overall did not move, so say what did rather than nothing.
       reasons.push(
-        "A criterion score was changed after this ranking without moving the total."
+        rankingSawUpTo == null
+          ? "This ranking does not record which scores it saw."
+          : "A criterion score was changed after this ranking without moving the total."
       );
     }
     return reasons;
   }, [
+    rankingSawUpTo,
     scoredAgainstOldRubric,
     addedSinceRanking,
     removedSinceRanking,

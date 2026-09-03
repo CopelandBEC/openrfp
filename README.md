@@ -70,8 +70,8 @@ that signs up can spend your provider budget.
 changes without recreating the project.
 
 **Re-run `schema.sql` before deploying the version that added `updated_at` to
-`rubrics`, `evaluations` and `comparisons` (and `rubric_updated_at` to
-`evaluations`), not after.** The dashboard reads those columns to tell a
+`rubrics`, `evaluations` and `comparisons`, `rubric_updated_at` to
+`evaluations`, and `evaluations_as_of` to `comparisons`, not after.** The dashboard reads those columns to tell a
 current ranking from one that predates a score or a rubric change, and the
 scoring route stamps each evaluation with the rubric it scored against.
 PostgREST rejects the whole query when a selected column is missing — so until

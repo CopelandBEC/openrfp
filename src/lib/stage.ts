@@ -48,15 +48,20 @@ export interface StageInputs {
    * when `criteria` change — accepting a rubric unchanged does not count.
    */
   rubricUpdatedAt: string | null;
+  /** Whether a saved ranking exists at all. */
+  hasRanking: boolean;
   /**
-   * When the ranking was last written, or null if there isn't one.
+   * The evaluations revision the saved ranking was built from: the newest
+   * `evaluations.updated_at` the compare route read before calling the model,
+   * stored as `comparisons.evaluations_as_of`. Null if there is no ranking, or
+   * if the row does not say — which reads as out of date, and a re-rank fixes.
    *
-   * This has to be `updated_at`, not `created_at`. Re-ranking upserts the
-   * comparison row, which leaves the creation time alone, so a freshness check
-   * against `created_at` latched on "out of date" and no amount of re-ranking
-   * could clear it.
+   * Not the row's own `updated_at`. That is when the ranking was *saved*, a
+   * model call after its inputs were read, and an override landing in that
+   * window is newer than what the ranking saw but older than the row. And not
+   * `created_at`, which a re-rank's upsert never moves.
    */
-  comparisonAt: string | null;
+  rankingInputsAsOf: string | null;
   /**
    * When any evaluation was last written.
    *
@@ -87,13 +92,15 @@ export interface ScoredProposal {
   rubricUpdatedAt: string | null;
 }
 
+export type StageName = "rubric" | "responses" | "evaluations" | "comparison";
+
 export interface Stage {
   /** 1-4, for the progress pips. */
   step: number;
   /** What is waiting on the owner, in their words. */
   label: string;
   /** The screen that action happens on. */
-  next: "rubric" | "responses" | "evaluations" | "comparison";
+  next: StageName;
   /** True only when there is nothing left to do. */
   done: boolean;
 }
@@ -106,7 +113,8 @@ export function deriveStage({
   responseCount,
   evaluations,
   rubricUpdatedAt,
-  comparisonAt,
+  hasRanking,
+  rankingInputsAsOf,
   latestEvaluationAt,
   rankedResponseIds,
 }: StageInputs): Stage {
@@ -159,8 +167,9 @@ export function deriveStage({
   // proposal removed after ranking leaves no newer timestamp behind, so the
   // set has to be checked as well as the times.
   const comparisonIsCurrent =
-    comparisonAt != null &&
-    (latestEvaluationAt == null || latestEvaluationAt <= comparisonAt) &&
+    hasRanking &&
+    rankingInputsAsOf != null &&
+    (latestEvaluationAt == null || latestEvaluationAt <= rankingInputsAsOf) &&
     rankedResponseIds != null &&
     sameSet(
       rankedResponseIds,
@@ -171,10 +180,35 @@ export function deriveStage({
   }
   return {
     step: 3,
-    label: comparisonAt == null ? "Ready to rank" : "Needs re-ranking",
+    label: hasRanking ? "Needs re-ranking" : "Ready to rank",
     next: "evaluations",
     done: false,
   };
+}
+
+/**
+ * Which stages of an RFP have data behind them, and so can be navigated to.
+ *
+ * The progress rail inferred this from the URL — everything before the
+ * current screen reachable, everything after it not — which made a finished
+ * evaluation's Decision screen unreachable the moment its owner stepped back
+ * to the rubric. The rows are the fact: a stage is reachable if what it shows
+ * exists. The rubric screen always is; it is where an RFP starts.
+ */
+export function reachedStages({
+  hasRubric,
+  evaluationCount,
+  hasRanking,
+}: {
+  hasRubric: boolean;
+  evaluationCount: number;
+  hasRanking: boolean;
+}): Set<StageName> {
+  const reached = new Set<StageName>(["rubric"]);
+  if (hasRubric) reached.add("responses");
+  if (evaluationCount > 0) reached.add("evaluations");
+  if (hasRanking) reached.add("comparison");
+  return reached;
 }
 
 /**

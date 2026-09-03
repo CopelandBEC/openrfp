@@ -120,6 +120,17 @@ update public.comparisons set updated_at = coalesce(created_at, now()) where upd
 alter table public.comparisons alter column updated_at set default now();
 alter table public.comparisons alter column updated_at set not null;
 
+-- The evaluations revision a ranking was built from: the newest
+-- `evaluations.updated_at` the compare route read before it called the model.
+-- This row's `updated_at` is when the ranking was *saved*, a model call later,
+-- and an override landing in that window is newer than what the ranking saw
+-- but older than the row — so judged against `updated_at` the ranking read as
+-- current. Backfilled from `updated_at`, which reads existing rankings as
+-- having seen everything up to their last save; the best available answer.
+alter table public.comparisons
+  add column if not exists evaluations_as_of timestamptz;
+update public.comparisons set evaluations_as_of = updated_at where evaluations_as_of is null;
+
 -- When the rubric's criteria last changed — not when its row was last
 -- written. Accepting a rubric flips `edited_by_user` and rewrites `criteria`
 -- unchanged, and that must not read as a change every score was made

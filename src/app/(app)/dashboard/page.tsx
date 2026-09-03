@@ -42,7 +42,7 @@ export default async function DashboardPage({
   const { data: rfps, error: loadError } = await supabase
     .from("rfps")
     .select(
-      "id, title, description, created_at, rubrics(edited_by_user, updated_at), responses(count), evaluations(response_id, updated_at, rubric_updated_at), comparisons(updated_at, ranking)"
+      "id, title, description, created_at, rubrics(edited_by_user, updated_at), responses(count), evaluations(response_id, updated_at, rubric_updated_at), comparisons(evaluations_as_of, ranking)"
     )
     .order("created_at", { ascending: false });
 
@@ -135,7 +135,7 @@ export default async function DashboardPage({
                 }[];
                 const evaluatedAt = evaluations.map((e) => e.updated_at);
                 const comparison = firstEmbedded<{
-                  updated_at: string;
+                  evaluations_as_of: string | null;
                   ranking: unknown;
                 }>(rfp.comparisons);
                 return (
@@ -155,7 +155,8 @@ export default async function DashboardPage({
                           rubricUpdatedAt: e.rubric_updated_at,
                         })),
                         rubricUpdatedAt: rubric?.updated_at ?? null,
-                        comparisonAt: comparison?.updated_at ?? null,
+                        hasRanking: comparison != null,
+                        rankingInputsAsOf: comparison?.evaluations_as_of ?? null,
                         latestEvaluationAt: evaluatedAt.length
                           ? evaluatedAt.reduce((a, b) => (a > b ? a : b))
                           : null,

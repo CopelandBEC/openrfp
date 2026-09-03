@@ -30,6 +30,7 @@ interface EvaluationRow {
   strengths: string[] | null;
   weaknesses: string[] | null;
   model_used: string | null;
+  updated_at: string | null;
 }
 
 /** Shape of the `responses` select below. */
@@ -70,7 +71,7 @@ export async function POST(request: NextRequest) {
   const { data: evaluations, error: evalError } = await supabase
     .from("evaluations")
     .select(
-      "id, response_id, rfp_id, scores, overall_score, summary, strengths, weaknesses, model_used"
+      "id, response_id, rfp_id, scores, overall_score, summary, strengths, weaknesses, model_used, updated_at"
     )
     .eq("rfp_id", rfp_id);
 
@@ -80,6 +81,20 @@ export async function POST(request: NextRequest) {
       { status: 400 }
     );
   }
+
+  // The revision of the scores this ranking is built from, saved with it so
+  // freshness is judged against what the model saw rather than when the row
+  // was written. The model call below takes a while, and an override made in
+  // another tab during it is newer than this and older than the save.
+  const evaluationsAsOf = (evaluations as EvaluationRow[]).reduce<
+    string | null
+  >(
+    (latest, e) =>
+      e.updated_at != null && (latest == null || e.updated_at > latest)
+        ? e.updated_at
+        : latest,
+    null
+  );
 
   // Fetch rubric
   const { data: rubric } = await supabase
@@ -164,6 +179,7 @@ export async function POST(request: NextRequest) {
           interview_focus_areas: comparison.interview_focus_areas || [],
           model_used: model,
           prompt_version: PROMPT_VERSION,
+          evaluations_as_of: evaluationsAsOf,
         },
         { onConflict: "rfp_id" }
       )
