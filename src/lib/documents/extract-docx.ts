@@ -65,33 +65,77 @@ async function readPageCount(buffer: Buffer): Promise<number> {
  * mammoth emits a small, predictable subset of HTML: block elements for
  * paragraphs, headings and list items; table/tr/td for tables; inline
  * strong/em/a/img/br; and only `&amp;`, `&lt;`, `&gt;` as entities in text.
- * That is little enough to unwind with string replacement.
+ *
+ * Walked tag by tag with a depth counter rather than matched with regular
+ * expressions, because Word allows a table inside a table cell and mammoth
+ * emits it as nested `<td>`s; a non-greedy match pairs the outer cell's open
+ * tag with the first inner close and the rest of the row falls apart. Here a
+ * cell's contents are flattened onto its line however deep they go: nested
+ * cells joined with " / ", nested rows with "; ", and the outer cells with
+ * " | " as before.
  */
-export function htmlToText(html: string): string {
-  const cellsFlattened = html.replace(
-    /<t([dh])\b[^>]*>([\s\S]*?)<\/t\1>/g,
-    (_m, _tag, inner: string) =>
-      inner
-        .replace(/<br\s*\/?>/g, " ")
-        .replace(/<\/(p|h[1-6]|li|div)>/g, " ")
-        .replace(/<[^>]+>/g, "")
-        .replace(/\s+/g, " ")
-        .trim() + " | "
-  );
+const BLOCK_TAGS = new Set([
+  "p", "h1", "h2", "h3", "h4", "h5", "h6", "li", "div",
+  "table", "tbody", "thead", "ul", "ol", "blockquote", "pre",
+]);
 
-  return cellsFlattened
-    .replace(/<\/tr>/g, "\n")
-    .replace(/<br\s*\/?>/g, "\n")
-    .replace(/<li\b[^>]*>/g, "- ")
-    .replace(/<\/(p|h[1-6]|li|div|table|tbody|thead|ul|ol|blockquote|pre)>/g, "\n")
-    .replace(/<[^>]+>/g, "")
-    .replace(/&lt;/g, "<")
-    .replace(/&gt;/g, ">")
-    .replace(/&quot;/g, '"')
-    .replace(/&amp;/g, "&")
+const SEPARATORS = new Set([" | ", " / ", "; ", " "]);
+
+export function htmlToText(html: string): string {
+  const out: string[] = [];
+  let cellDepth = 0;
+  // A separator replaces any separators already trailing, so a nested row's
+  // end reads "a / b; c / d", not "a / b / ; c / d / ;".
+  const separate = (sep: string) => {
+    while (out.length > 0 && SEPARATORS.has(out[out.length - 1])) out.pop();
+    out.push(sep);
+  };
+
+  for (const m of html.matchAll(/<(\/?)([a-zA-Z][a-zA-Z0-9]*)\b[^>]*>|[^<]+/g)) {
+    if (m[2] === undefined) {
+      const text = decodeEntities(m[0]);
+      out.push(cellDepth > 0 ? text.replace(/\s+/g, " ") : text);
+      continue;
+    }
+    const closing = m[1] === "/";
+    const tag = m[2].toLowerCase();
+
+    if (tag === "td" || tag === "th") {
+      if (!closing) {
+        cellDepth++;
+      } else if (cellDepth > 0) {
+        cellDepth--;
+        separate(cellDepth === 0 ? " | " : " / ");
+      }
+    } else if (tag === "tr") {
+      if (closing) separate(cellDepth > 0 ? "; " : "\n");
+    } else if (tag === "br") {
+      separate(cellDepth > 0 ? " " : "\n");
+    } else if (tag === "li" && !closing) {
+      if (cellDepth === 0) out.push("- ");
+    } else if (closing && BLOCK_TAGS.has(tag)) {
+      separate(cellDepth > 0 ? " " : "\n");
+    }
+  }
+
+  return out
+    .join("")
     .split("\n")
-    .map((line) => line.replace(/\s+\|\s*$/, "").trimEnd())
+    .map((line) =>
+      line
+        .replace(/[ \t]{2,}/g, " ")
+        .replace(/\s*(\||\/|;)\s*$/, "")
+        .trimEnd()
+    )
     .join("\n")
     .replace(/\n{3,}/g, "\n\n")
     .trim();
+}
+
+function decodeEntities(text: string): string {
+  return text
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">")
+    .replace(/&quot;/g, '"')
+    .replace(/&amp;/g, "&");
 }
