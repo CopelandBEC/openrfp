@@ -73,12 +73,12 @@ export default function NewRfpPage() {
         if (outcome == null || outcome.state === "stale") {
           try {
             const rfpId = await create(path, fields);
-            forgetPending(pendingScope);
+            forgetPending(pendingScope, path);
             return rfpId;
           } catch (err) {
             outcome = await reconcileAfterFailure(supabase, ref, path);
             if (outcome.state === "reclaimed") {
-              forgetPending(pendingScope);
+              forgetPending(pendingScope, path);
               throw err;
             }
           }
@@ -92,11 +92,11 @@ export default function NewRfpPage() {
           setError("");
         }
         if (outcome.state === "referenced") {
-          forgetPending(pendingScope);
+          forgetPending(pendingScope, path);
           return outcome.id;
         }
         if (outcome.state === "reclaimed") {
-          forgetPending(pendingScope);
+          forgetPending(pendingScope, path);
           throw new Error("The upload did not complete. Please upload the RFP again.");
         }
       }
@@ -109,20 +109,29 @@ export default function NewRfpPage() {
 
   useEffect(() => {
     const pending = readPending(pendingScope);
-    if (!pending) return;
+    if (pending.length === 0) return;
     let cancelled = false;
     (async () => {
       setLoading(true);
-      try {
-        const rfpId = await settleUpload(pending.path, pending.fields, false);
-        if (!cancelled) router.push(`/rfp/${rfpId}/rubric?new=1`);
-      } catch (err) {
-        if (!cancelled) {
-          setError(err instanceof Error ? err.message : "An earlier upload did not complete.");
+      let firstRfpId: string | null = null;
+      let lastFailure: string | null = null;
+      // Settle every remembered upload; go on to the first RFP that results.
+      for (const entry of pending) {
+        if (cancelled) break;
+        try {
+          const rfpId = await settleUpload(entry.path, entry.fields, false);
+          firstRfpId ??= rfpId;
+        } catch (err) {
+          lastFailure = err instanceof Error ? err.message : "An earlier upload did not complete.";
         }
-      } finally {
-        if (!cancelled) setLoading(false);
       }
+      if (cancelled) return;
+      if (firstRfpId) {
+        router.push(`/rfp/${firstRfpId}/rubric?new=1`);
+        return;
+      }
+      if (lastFailure) setError(lastFailure);
+      setLoading(false);
     })();
     return () => {
       cancelled = true;

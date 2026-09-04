@@ -209,10 +209,12 @@ export async function waitForUpload(
 }
 
 /**
- * Remember an upload whose outcome is not yet known, so that if the page is
- * left before it resolves the same path is retried rather than a fresh
+ * Remember uploads whose outcome is not yet known, so that if the page is
+ * left before one resolves the same path is retried rather than a fresh
  * upload made — a fresh upload would leave the first object and its claim
- * behind. Per browser, best effort; storage may be unavailable.
+ * behind. A list, not a slot: a second attempt, or the same screen in another
+ * tab, must not overwrite the only handle to an earlier orphan. Per browser,
+ * best effort; storage may be unavailable.
  */
 export interface PendingUpload {
   path: string;
@@ -221,39 +223,43 @@ export interface PendingUpload {
 }
 
 function pendingKey(scope: string): string {
-  return `openrfp:pending-upload:${scope}`;
+  return `openrfp:pending-uploads:${scope}`;
 }
 
-export function rememberPending(scope: string, pending: PendingUpload): void {
+function writePending(scope: string, list: PendingUpload[]): void {
   try {
-    window.localStorage.setItem(pendingKey(scope), JSON.stringify(pending));
+    if (list.length === 0) window.localStorage.removeItem(pendingKey(scope));
+    else window.localStorage.setItem(pendingKey(scope), JSON.stringify(list));
   } catch {
     // Nothing to do; the in-session flow still works.
   }
 }
 
-export function forgetPending(scope: string): void {
+export function readPending(scope: string): PendingUpload[] {
   try {
-    window.localStorage.removeItem(pendingKey(scope));
+    const raw = window.localStorage.getItem(pendingKey(scope));
+    if (!raw) return [];
+    const parsed = JSON.parse(raw) as unknown;
+    if (!Array.isArray(parsed)) return [];
+    // No age cutoff: however old, a remembered path is settled by asking the
+    // tables. Past the claims sweep it finds no claim and no row, and the
+    // object is reclaimed — exactly what would otherwise be left for good.
+    return parsed.filter(
+      (p): p is PendingUpload =>
+        typeof (p as PendingUpload)?.path === "string" &&
+        typeof (p as PendingUpload)?.startedAt === "number" &&
+        typeof (p as PendingUpload)?.fields === "object"
+    );
   } catch {
-    // ignore
+    return [];
   }
 }
 
-export function readPending(scope: string): PendingUpload | null {
-  try {
-    const raw = window.localStorage.getItem(pendingKey(scope));
-    if (!raw) return null;
-    const parsed = JSON.parse(raw) as PendingUpload;
-    if (typeof parsed?.path !== "string" || typeof parsed?.startedAt !== "number") {
-      return null;
-    }
-    // No age cutoff: however old, the remembered path is settled by asking
-    // the tables. Past the claims sweep it finds no claim and no row, and
-    // the object is reclaimed — which is exactly what would otherwise be
-    // left behind for good.
-    return parsed;
-  } catch {
-    return null;
-  }
+export function rememberPending(scope: string, pending: PendingUpload): void {
+  const rest = readPending(scope).filter((p) => p.path !== pending.path);
+  writePending(scope, [...rest, pending]);
+}
+
+export function forgetPending(scope: string, path: string): void {
+  writePending(scope, readPending(scope).filter((p) => p.path !== path));
 }

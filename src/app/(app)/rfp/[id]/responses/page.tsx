@@ -296,7 +296,7 @@ export default function ResponsesPage({
     ) => {
       rememberPending(pendingScope, { path, startedAt: Date.now(), fields });
       const finish = (outcome: "done" | "gone") => {
-        forgetPending(pendingScope);
+        forgetPending(pendingScope, path);
         return outcome;
       };
       const ref = { table: "responses" as const, column: "file_path" as const };
@@ -357,22 +357,27 @@ export default function ResponsesPage({
     [pendingScope, supabase, attach, adopt, adoptById, id]
   );
 
-  // An upload left unresolved by a previous visit is settled before anything
-  // else, so the same object is finished rather than a new one made.
+  // Uploads left unresolved by a previous visit are settled before anything
+  // else, one by one, so the same objects are finished rather than new ones
+  // made.
   useEffect(() => {
     const pending = readPending(pendingScope);
-    if (!pending) return;
+    if (pending.length === 0) return;
     let cancelled = false;
     (async () => {
       setUploading(true);
-      try {
-        await settleUpload(pending.path, pending.fields, false);
-      } catch (err) {
-        if (!cancelled) {
-          setError(err instanceof Error ? err.message : "An earlier upload did not complete.");
+      const failures: string[] = [];
+      for (const entry of pending) {
+        if (cancelled) break;
+        try {
+          await settleUpload(entry.path, entry.fields, false);
+        } catch (err) {
+          failures.push(err instanceof Error ? err.message : "An earlier upload did not complete.");
         }
-      } finally {
-        if (!cancelled) setUploading(false);
+      }
+      if (!cancelled) {
+        if (failures.length) setError(failures[failures.length - 1]);
+        setUploading(false);
       }
     })();
     return () => {
