@@ -136,10 +136,15 @@ export async function reconcileAfterFailure(
 
   const claim = await supabase
     .from("upload_claims")
-    .select("claimed_at")
+    .select("claimed_at, completed_at")
     .eq("path", path)
     .maybeSingle();
   if (claim.error) return { state: "unknown" };
+  if (claim.data?.completed_at) {
+    // Processed, and its row since deleted by its owner (the delete removes
+    // the object too). Nothing to wait for and nothing to reclaim.
+    return { state: "reclaimed" };
+  }
   if (claim.data) {
     const claimedAt = Date.parse(String(claim.data.claimed_at));
     // A claim this old with no row was left by a killed function. Posting the
@@ -222,9 +227,10 @@ export function readPending(scope: string): PendingUpload | null {
     if (typeof parsed?.path !== "string" || typeof parsed?.startedAt !== "number") {
       return null;
     }
-    // A pending upload older than a day is past the claims table's sweep; the
-    // object, if any, is unrecoverable through this path.
-    if (Date.now() - parsed.startedAt > 24 * 60 * 60 * 1000) return null;
+    // No age cutoff: however old, the remembered path is settled by asking
+    // the tables. Past the claims sweep it finds no claim and no row, and
+    // the object is reclaimed — which is exactly what would otherwise be
+    // left behind for good.
     return parsed;
   } catch {
     return null;
