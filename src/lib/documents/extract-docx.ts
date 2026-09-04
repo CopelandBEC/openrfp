@@ -63,84 +63,191 @@ async function readPageCount(buffer: Buffer): Promise<number> {
 
 /**
  * mammoth emits a small, predictable subset of HTML: block elements for
- * paragraphs, headings and list items; table/tr/td for tables; inline
- * strong/em/a/img/br; and only `&amp;`, `&lt;`, `&gt;` as entities in text.
+ * paragraphs, headings and list items; ul/ol/li for lists, with a sub-list
+ * nested inside its parent item; table/tr/td for tables, with colspan and
+ * rowspan for merged cells; inline strong/em/a/img/br; and only `&amp;`,
+ * `&lt;`, `&gt;` as entities in text.
  *
- * Walked tag by tag with a depth counter rather than matched with regular
- * expressions, because Word allows a table inside a table cell and mammoth
- * emits it as nested `<td>`s; a non-greedy match pairs the outer cell's open
- * tag with the first inner close and the rest of the row falls apart. A
- * cell's contents are flattened onto its line however deep they go: nested
- * cells joined with " / ", nested rows with "; ", and the outer cells with
- * " | ".
+ * Walked tag by tag rather than matched with regular expressions, because
+ * Word allows a table inside a table cell and mammoth emits it as nested
+ * `<td>`s; a non-greedy match pairs the outer cell's open tag with the first
+ * inner close and the rest of the row falls apart.
  *
- * Delimiters are written when a cell or row *opens*, between it and the one
- * before, never when one closes. That keeps an empty cell in the row as
- * "Item | | $100" rather than letting it vanish and shift every later value
- * a column to the left.
+ * Tables are rendered a row at a time from buffered cells so that merged
+ * cells keep their place: a cell spanning columns is followed by as many
+ * empty columns, and a cell spanning rows is repeated into each row it
+ * covers, so a line item that Word shows once beside three priced phases is
+ * beside each of them here. Cells are joined with " | ", rows with newlines;
+ * inside a nested table, " / " and "; ". An empty cell keeps its delimiters
+ * ("Item | | $100") so later values stay in their columns.
+ *
+ * Ordered list items are numbered by their nesting path ("2.1.") rather
+ * than bulleted, so a clause referred to elsewhere by number can be found.
+ * Word's own numbering is not in the HTML, so every list counts from one.
  */
 const BLOCK_TAGS = new Set([
-  "p", "h1", "h2", "h3", "h4", "h5", "h6", "li", "div",
-  "tbody", "thead", "ul", "ol", "blockquote", "pre",
+  "p", "h1", "h2", "h3", "h4", "h5", "h6", "li", "div", "blockquote", "pre",
 ]);
+
+interface CellBuffer {
+  parts: string[];
+  colspan: number;
+  rowspan: number;
+}
+
+interface TableContext {
+  rows: string[][];
+  /** Column → text of a cell above still spanning into the coming rows. */
+  carry: Map<number, { text: string; remaining: number }>;
+  row: CellBuffer[] | null;
+}
 
 export function htmlToText(html: string): string {
   const out: string[] = [];
-  let cellDepth = 0;
-  /** Rows seen so far in each open table, innermost last. */
-  const tables: number[] = [];
-  /** Cells seen so far in each open row, innermost last. */
-  const rows: number[] = [];
+  /** Where text goes: the document, or the innermost open cell. */
+  const sinks: string[][] = [out];
+  const tables: TableContext[] = [];
+  const lists: { ordered: boolean; count: number }[] = [];
 
-  for (const m of html.matchAll(/<(\/?)([a-zA-Z][a-zA-Z0-9]*)\b[^>]*>|[^<]+/g)) {
+  const inCell = () => sinks.length > 1;
+  const sink = () => sinks[sinks.length - 1];
+  const newline = () => {
+    const s = sink();
+    if (inCell()) {
+      s.push(" ");
+    } else if (s.length > 0 && !s[s.length - 1].endsWith("\n")) {
+      s.push("\n");
+    }
+  };
+
+  for (const m of html.matchAll(/<(\/?)([a-zA-Z][a-zA-Z0-9]*)\b([^>]*)>|[^<]+/g)) {
     if (m[2] === undefined) {
       const text = decodeEntities(m[0]);
-      out.push(cellDepth > 0 ? text.replace(/\s+/g, " ") : text);
+      sink().push(inCell() ? text.replace(/\s+/g, " ") : text);
       continue;
     }
     const closing = m[1] === "/";
     const tag = m[2].toLowerCase();
+    const attrs = m[3];
 
     if (tag === "table") {
       if (!closing) {
-        tables.push(0);
+        newline();
+        tables.push({ rows: [], carry: new Map(), row: null });
       } else {
-        tables.pop();
-        // A blank line after an outer table, so prose does not read as a row.
-        out.push(cellDepth > 0 ? " " : "\n\n");
+        const table = tables.pop();
+        if (table) {
+          const nested = inCell();
+          const text = table.rows
+            .map((cols) => cols.join(nested ? " / " : " | "))
+            .join(nested ? "; " : "\n");
+          sink().push(nested ? ` ${text} ` : `${text}\n\n`);
+        }
       }
     } else if (tag === "tr") {
+      const table = tables[tables.length - 1];
+      if (!table) continue;
       if (!closing) {
-        const seen = tables.length > 0 ? tables[tables.length - 1]++ : 0;
-        if (seen > 0) out.push(cellDepth > 0 ? "; " : "\n");
-        rows.push(0);
-      } else {
-        rows.pop();
+        table.row = [];
+      } else if (table.row) {
+        table.rows.push(renderRow(table, table.row));
+        table.row = null;
       }
     } else if (tag === "td" || tag === "th") {
+      const table = tables[tables.length - 1];
       if (!closing) {
-        const seen = rows.length > 0 ? rows[rows.length - 1]++ : 0;
-        if (seen > 0) out.push(cellDepth > 0 ? " / " : " | ");
-        cellDepth++;
-      } else if (cellDepth > 0) {
-        cellDepth--;
+        const cell: CellBuffer = {
+          parts: [],
+          colspan: spanAttribute(attrs, "colspan"),
+          rowspan: spanAttribute(attrs, "rowspan"),
+        };
+        table?.row?.push(cell);
+        sinks.push(cell.parts);
+      } else if (inCell()) {
+        sinks.pop();
       }
-    } else if (tag === "br") {
-      out.push(cellDepth > 0 ? " " : "\n");
+    } else if (tag === "ol" || tag === "ul") {
+      if (!closing) {
+        newline();
+        lists.push({ ordered: tag === "ol", count: 0 });
+      } else {
+        lists.pop();
+        newline();
+      }
     } else if (tag === "li" && !closing) {
-      if (cellDepth === 0) out.push("- ");
+      const list = lists[lists.length - 1];
+      if (list) list.count++;
+      sink().push(list?.ordered ? `${listNumber(lists)} ` : "- ");
+    } else if (tag === "br") {
+      newline();
     } else if (closing && BLOCK_TAGS.has(tag)) {
-      out.push(cellDepth > 0 ? " " : "\n");
+      newline();
     }
   }
 
   return out
     .join("")
     .split("\n")
-    .map((line) => line.replace(/[ \t]{2,}/g, " ").replace(/ ; /g, "; ").trim())
+    .map((line) => line.replace(/[ \t]{2,}/g, " ").trim())
     .join("\n")
     .replace(/\n{3,}/g, "\n\n")
     .trim();
+}
+
+/** "2.1." for the second top-level item's first sub-item. */
+function listNumber(lists: { ordered: boolean; count: number }[]): string {
+  return (
+    lists
+      .filter((l) => l.ordered)
+      .map((l) => l.count)
+      .join(".") + "."
+  );
+}
+
+function spanAttribute(attrs: string, name: string): number {
+  const m = new RegExp(`\\b${name}="(\\d+)"`, "i").exec(attrs);
+  const n = m ? Number(m[1]) : 1;
+  return Number.isFinite(n) && n > 1 ? Math.min(n, 100) : 1;
+}
+
+/**
+ * Lay the row's cells onto grid columns, filling any column still covered by
+ * a cell above with that cell's text, and padding a spanning cell with empty
+ * columns so that everything after it stays aligned.
+ */
+function renderRow(table: TableContext, cells: CellBuffer[]): string[] {
+  const cols: string[] = [];
+  let col = 0;
+  const takeCarry = () => {
+    const c = table.carry.get(col);
+    if (!c) return false;
+    cols.push(c.text);
+    if (--c.remaining <= 0) table.carry.delete(col);
+    col++;
+    return true;
+  };
+
+  for (const cell of cells) {
+    while (takeCarry()) {
+      // fill every covered column before this cell
+    }
+    const text = cell.parts.join("").replace(/\s+/g, " ").trim();
+    cols.push(text);
+    if (cell.rowspan > 1) {
+      table.carry.set(col, { text, remaining: cell.rowspan - 1 });
+    }
+    col++;
+    for (let i = 1; i < cell.colspan; i++) {
+      cols.push("");
+      col++;
+    }
+  }
+  const trailing = [...table.carry.keys()].filter((k) => k >= col).sort((a, b) => a - b);
+  for (const k of trailing) {
+    col = k;
+    takeCarry();
+  }
+  return cols;
 }
 
 function decodeEntities(text: string): string {
