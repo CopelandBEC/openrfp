@@ -348,11 +348,14 @@ and PDF-only limits, so the browser-side checks are a courtesy, not the guard.
 Each path is claimed before it is read, in the `upload_claims` table, through
 database functions the caller cannot bypass — see the `Upload claims` section
 of `schema.sql` for why a row in `responses` or `rfps` could not serve as the
-claim. A second request for a claimed path is refused before any download or
-parsing, each user has a small cap on uploads in flight, and a claim left by a
-killed function is taken over after three minutes. Rows are written only for
-finished uploads. **Re-run `schema.sql` before deploying this version**; the
-routes call those functions and fail without them.
+claim, and why each function checks a fact the caller cannot fabricate (the
+object exists; a row exists; the claim's token). A claim lives only while a
+path is being processed: a second request is refused before any download or
+parsing, each user has a small cap on uploads in flight, a claim left by a
+killed function is taken over after three minutes, and completion deletes it.
+The browser remembers an unresolved upload and settles it on its next visit
+rather than uploading afresh. **Re-run `schema.sql` before deploying this
+version**; the routes call those functions and fail without them.
 
 Every API call in the client reads its response through `readApiResponse`,
 which parses JSON only when the body is JSON and otherwise says what the status

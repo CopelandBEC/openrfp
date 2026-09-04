@@ -70,6 +70,12 @@ export async function POST(request: NextRequest) {
       { status: 409 }
     );
   }
+  if (claim.state === "missing") {
+    return NextResponse.json(
+      { error: "The uploaded file could not be found. Please try the upload again." },
+      { status: 404 }
+    );
+  }
   if (claim.state === "busy") {
     return NextResponse.json(
       {

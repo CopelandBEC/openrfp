@@ -206,31 +206,40 @@ create unique index if not exists rfps_rfp_file_path_key
 -- rows through the policies above, mid-parse, and post the path again — and a
 -- row inserted before parsing is not proof that parsing finished.
 --
--- So claims live here, and callers cannot touch this table directly: row-level
--- security is on and the only write path is the functions below, which run as
--- the definer. The routes run with the caller's own JWT, so the functions are
--- callable by the caller too — which is why mutating a claim needs its token.
--- `claim_upload` mints a token and returns it to whoever took the claim, which
--- for a path in flight is the route; a second caller is told "busy" and gets
--- no token, so it cannot release or complete a claim it does not hold. The
--- browser may read its own claims (minus the token) to tell "still being
--- processed" from "never reached the server".
---
--- A claim is taken before the download, marked complete after the row is
--- written, or released if anything fails. An in-flight claim older than the
--- routes' maximum duration can only be a function that was killed, so a new
--- request takes it over rather than being blocked for ever. Each user is
--- capped at a few claims in flight, and that count is taken under a per-user
--- advisory lock so concurrent requests cannot all pass it at once.
+-- So a claim is a row here for the time a path is being processed, and only
+-- for that time. Callers cannot touch this table directly: row-level security
+-- is on and the only write path is the functions below, which run as the
+-- definer. The routes run with the caller's own JWT, so the functions are
+-- callable by the caller too, and each one therefore checks a fact the caller
+-- cannot fabricate:
+--   * `claim_upload` requires the storage object to exist, in the caller's
+--     own folder, and refuses a path that already has an application row
+--     (the unique indexes above make that row the permanent record). It mints
+--     a token and returns it to whoever took the claim; a second caller for a
+--     path in flight is told "busy" and gets no token.
+--   * `complete_upload` requires the token and an application row for the
+--     path, and then deletes the claim — a finished upload leaves nothing here.
+--   * `release_upload` requires the token and deletes the claim.
+-- A claim older than the routes' maximum duration can only be a function that
+-- was killed, so a new request for the same path takes it over. Each user is
+-- capped at a few claims in flight, decided under a per-user advisory lock so
+-- concurrent requests cannot all pass the count; and each claim decision also
+-- sweeps that user's claims older than a day, so an abandoned one cannot pile
+-- up. The browser may read its own claims, minus the token, to tell "still
+-- being processed" from "never reached the server".
 create table if not exists public.upload_claims (
   path text primary key,
   user_id uuid references auth.users on delete cascade not null,
   claimed_at timestamptz not null default now(),
-  completed_at timestamptz,
   token uuid not null default gen_random_uuid()
 );
 alter table public.upload_claims
   add column if not exists token uuid not null default gen_random_uuid();
+-- Earlier revisions marked completion instead of deleting the claim.
+alter table public.upload_claims drop column if exists completed_at;
+drop index if exists public.upload_claims_user_inflight;
+create index if not exists upload_claims_user_claimed
+  on public.upload_claims (user_id, claimed_at);
 alter table public.upload_claims enable row level security;
 drop policy if exists "users read own upload claims" on public.upload_claims;
 create policy "users read own upload claims" on public.upload_claims
@@ -238,20 +247,32 @@ create policy "users read own upload claims" on public.upload_claims
 -- The policy says which rows; these say which columns. The token stays with
 -- the route that minted it.
 revoke all on table public.upload_claims from anon, authenticated;
-grant select (path, user_id, claimed_at, completed_at)
-  on public.upload_claims to authenticated;
-create index if not exists upload_claims_user_inflight
-  on public.upload_claims (user_id, claimed_at) where completed_at is null;
+grant select (path, user_id, claimed_at) on public.upload_claims to authenticated;
 
--- Signatures changed since the first version of these; drop before create.
+-- Signatures changed since the first versions of these; drop before create.
 drop function if exists public.claim_upload(text);
 drop function if exists public.complete_upload(text);
 drop function if exists public.release_upload(text);
+drop function if exists public.complete_upload(text, uuid);
+drop function if exists public.release_upload(text, uuid);
+
+-- Whether an application row already records this path.
+create or replace function public.upload_path_has_row(p_path text)
+returns boolean
+language sql
+security definer
+set search_path = public
+stable
+as $$
+  select exists (select 1 from public.responses where file_path = p_path)
+      or exists (select 1 from public.rfps where rfp_file_path = p_path);
+$$;
+revoke all on function public.upload_path_has_row(text) from public;
 
 -- Returns {"state": "claimed", "token": "..."} when the path is now the
 -- caller's to process; {"state": "busy"} when it is in flight or the caller
--- has too many in flight; {"state": "completed"} when it already produced a
--- row.
+-- has too many in flight; {"state": "completed"} when it already has a row;
+-- {"state": "missing"} when there is no such object in the caller's folder.
 create or replace function public.claim_upload(p_path text)
 returns jsonb
 language plpgsql
@@ -278,11 +299,25 @@ begin
   -- taken against everything this user's other requests have already done.
   perform pg_advisory_xact_lock(hashtext('upload_claims:' || v_user::text));
 
+  -- Sweep this user's long-abandoned claims so they cannot accumulate.
+  delete from public.upload_claims
+   where user_id = v_user and claimed_at < now() - interval '1 day';
+
+  if public.upload_path_has_row(p_path) then
+    return jsonb_build_object('state', 'completed');
+  end if;
+
+  -- A claim is for an object that exists. Nothing to claim otherwise, and no
+  -- row to leave behind for a path someone typed.
+  if not exists (
+    select 1 from storage.objects
+     where bucket_id = 'rfp-files' and name = p_path
+  ) then
+    return jsonb_build_object('state', 'missing');
+  end if;
+
   select * into v_existing from public.upload_claims where path = p_path for update;
   if found then
-    if v_existing.completed_at is not null then
-      return jsonb_build_object('state', 'completed');
-    end if;
     if v_existing.claimed_at > now() - v_stale then
       return jsonb_build_object('state', 'busy');
     end if;
@@ -295,8 +330,7 @@ begin
   end if;
 
   if (select count(*) from public.upload_claims
-        where user_id = v_user and completed_at is null
-          and claimed_at > now() - v_stale) >= v_max_inflight then
+        where user_id = v_user and claimed_at > now() - v_stale) >= v_max_inflight then
     return jsonb_build_object('state', 'busy');
   end if;
 
@@ -306,15 +340,17 @@ begin
 end;
 $$;
 
+-- Completion is the deletion of the claim, and only once a row records the
+-- path — so a caller with a token but no upload changes nothing.
 create or replace function public.complete_upload(p_path text, p_token uuid)
 returns void
 language sql
 security definer
 set search_path = public
 as $$
-  update public.upload_claims
-     set completed_at = now()
-   where path = p_path and token = p_token and completed_at is null;
+  delete from public.upload_claims
+   where path = p_path and token = p_token
+     and public.upload_path_has_row(p_path);
 $$;
 
 create or replace function public.release_upload(p_path text, p_token uuid)
@@ -324,7 +360,7 @@ security definer
 set search_path = public
 as $$
   delete from public.upload_claims
-   where path = p_path and token = p_token and completed_at is null;
+   where path = p_path and token = p_token;
 $$;
 
 revoke all on function public.claim_upload(text) from public;

@@ -121,6 +121,8 @@ export type Claim =
   | { state: "claimed"; token: string }
   | { state: "busy" }
   | { state: "completed" }
+  /** No such object in the caller's folder. */
+  | { state: "missing" }
   | { state: "error"; error: string };
 
 export async function claimUpload(
@@ -133,7 +135,9 @@ export async function claimUpload(
   if (d?.state === "claimed" && typeof d.token === "string") {
     return { state: "claimed", token: d.token };
   }
-  if (d?.state === "busy" || d?.state === "completed") return { state: d.state };
+  if (d?.state === "busy" || d?.state === "completed" || d?.state === "missing") {
+    return { state: d.state };
+  }
   return { state: "error", error: `unexpected claim state ${JSON.stringify(data)}` };
 }
 

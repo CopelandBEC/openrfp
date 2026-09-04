@@ -1,4 +1,5 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
+import type { StorageError } from "@supabase/storage-js";
 import { isStorageDenied } from "@/lib/storage-errors";
 
 /**
@@ -54,10 +55,24 @@ export async function uploadDocument(
     .filter((part): part is string => !!part)
     .join("/");
 
-  const { error } = await supabase.storage.from(BUCKET).upload(path, file, {
-    contentType: "application/pdf",
-    upsert: false,
-  });
+  let error: StorageError | null = null;
+  try {
+    ({ error } = await supabase.storage.from(BUCKET).upload(path, file, {
+      contentType: "application/pdf",
+      upsert: false,
+    }));
+  } catch (thrown) {
+    // The request itself failed — but the server may have accepted the object
+    // before the connection dropped. Nothing references it yet, so remove it
+    // if it is there; removing what is not there is harmless.
+    await discardDocument(supabase, path);
+    return {
+      ok: false,
+      error: `Failed to upload file: ${
+        thrown instanceof Error ? thrown.message : "the connection dropped"
+      }`,
+    };
+  }
 
   if (error) {
     // A guest at their file cap is refused by the storage insert policy. That
@@ -121,7 +136,7 @@ export async function reconcileAfterFailure(
 
   const claim = await supabase
     .from("upload_claims")
-    .select("claimed_at, completed_at")
+    .select("claimed_at")
     .eq("path", path)
     .maybeSingle();
   if (claim.error) return { state: "unknown" };
@@ -138,4 +153,80 @@ export async function reconcileAfterFailure(
 
   await discardDocument(supabase, path);
   return { state: "reclaimed" };
+}
+
+/**
+ * Wait for an in-flight upload to resolve one way or the other.
+ *
+ * A route killed at its maximum duration leaves a claim that reads as
+ * "processing" until the lease expires, so an immediate reconcile cannot tell
+ * a slow parse from a dead one. This polls until a row appears (success), the
+ * claim is gone with no row (the route gave up and removed the object), or the
+ * claim goes stale (retry the same path). It gives up after the lease plus a
+ * margin, which a route cannot outlive.
+ */
+export async function waitForUpload(
+  supabase: SupabaseClient,
+  ref: { table: "responses" | "rfps"; column: "file_path" | "rfp_file_path" },
+  path: string,
+  onTick?: (elapsedMs: number) => void
+): Promise<Reconciliation> {
+  const started = Date.now();
+  const deadline = started + CLAIM_STALE_MS + 15_000;
+  for (;;) {
+    const outcome = await reconcileAfterFailure(supabase, ref, path);
+    if (outcome.state !== "processing") return outcome;
+    if (Date.now() > deadline) return { state: "stale" };
+    onTick?.(Date.now() - started);
+    await new Promise((r) => setTimeout(r, 5_000));
+  }
+}
+
+/**
+ * Remember an upload whose outcome is not yet known, so that if the page is
+ * left before it resolves the same path is retried rather than a fresh
+ * upload made — a fresh upload would leave the first object and its claim
+ * behind. Per browser, best effort; storage may be unavailable.
+ */
+export interface PendingUpload {
+  path: string;
+  startedAt: number;
+  fields: Record<string, string>;
+}
+
+function pendingKey(scope: string): string {
+  return `openrfp:pending-upload:${scope}`;
+}
+
+export function rememberPending(scope: string, pending: PendingUpload): void {
+  try {
+    window.localStorage.setItem(pendingKey(scope), JSON.stringify(pending));
+  } catch {
+    // Nothing to do; the in-session flow still works.
+  }
+}
+
+export function forgetPending(scope: string): void {
+  try {
+    window.localStorage.removeItem(pendingKey(scope));
+  } catch {
+    // ignore
+  }
+}
+
+export function readPending(scope: string): PendingUpload | null {
+  try {
+    const raw = window.localStorage.getItem(pendingKey(scope));
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as PendingUpload;
+    if (typeof parsed?.path !== "string" || typeof parsed?.startedAt !== "number") {
+      return null;
+    }
+    // A pending upload older than a day is past the claims table's sweep; the
+    // object, if any, is unrecoverable through this path.
+    if (Date.now() - parsed.startedAt > 24 * 60 * 60 * 1000) return null;
+    return parsed;
+  } catch {
+    return null;
+  }
 }
