@@ -187,11 +187,12 @@ export function htmlToText(html: string): string {
         const table = tables.pop();
         if (table) {
           const nested = inCell();
+          // Cell text and column delimiters were charged as the rows were
+          // rendered; the row separators are new.
+          charge(table.rows.length * 2 + 2);
           const text = table.rows
             .map((cols) => cols.join(nested ? " / " : " | "))
             .join(nested ? "; " : "\n");
-          // Its characters were charged as they were produced; this is the
-          // same text changing hands, so it is pushed rather than emitted.
           sink().push(nested ? ` ${text} ` : `${text}\n\n`);
         }
       }
@@ -315,8 +316,11 @@ function spanAttribute(attrs: string, name: string): number {
  * Lay the row's cells onto grid columns, filling any column still covered by
  * a cell above with that cell's text, and padding a spanning cell with empty
  * columns so that everything after it stays aligned. Every repeat of a
- * carried cell is new text, and is charged to the budget as such.
+ * carried cell is new text, and every column its delimiter, and both are
+ * charged to the budget: a table of sixty thousand empty hundred-column
+ * cells is nothing but delimiters, and would otherwise cost nothing.
  */
+const DELIMITER_CHARS = 3;
 function renderRow(
   table: TableContext,
   cells: CellBuffer[],
@@ -327,7 +331,7 @@ function renderRow(
   const takeCarry = () => {
     const c = table.carry.get(col);
     if (!c) return false;
-    charge(c.text.length);
+    charge(c.text.length + DELIMITER_CHARS);
     cols.push(c.text);
     if (--c.remaining <= 0) table.carry.delete(col);
     col++;
@@ -339,6 +343,7 @@ function renderRow(
       // fill every covered column before this cell
     }
     const text = cell.parts.join("").replace(/\s+/g, " ").trim();
+    charge(DELIMITER_CHARS);
     cols.push(text);
     if (cell.rowspan > 1) {
       table.carry.set(col, { text, remaining: cell.rowspan - 1 });
@@ -347,6 +352,7 @@ function renderRow(
     // The extra columns of a spanning cell are covered too: carry an empty
     // column into the rows below so nothing shifts into the merged region.
     for (let i = 1; i < cell.colspan; i++) {
+      charge(DELIMITER_CHARS);
       cols.push("");
       if (cell.rowspan > 1) {
         table.carry.set(col, { text: "", remaining: cell.rowspan - 1 });
