@@ -27,7 +27,11 @@ Every evaluation prompt, scoring rubric, and comparison logic is visible in this
 
 - **Frontend:** Next.js 16 + React 19 + TypeScript + shadcn/ui + Tailwind CSS
 - **Backend:** Supabase (PostgreSQL + Auth + Storage + Row-Level Security)
-- **AI:** Fireworks AI (model-agnostic architecture — switch models via env vars)
+- **AI:** Fireworks AI, a US inference provider. The default model is Kimi K3,
+  an open-weight model that Fireworks runs on its own US servers; Fireworks
+  does not store prompts or outputs or use them for training, and the model's
+  developer (Moonshot AI) never receives your documents. The architecture is
+  model-agnostic — switch models via env vars.
 - **Hosting:** Vercel
 
 ## Getting started
@@ -282,6 +286,8 @@ The app uses a model-agnostic architecture. To change the AI model, just update 
 
 ```env
 AI_PROVIDER=fireworks
+# Kimi K3, open-weight, run on Fireworks AI's US servers. Fireworks retains
+# nothing; the model's developer never receives your documents.
 AI_MODEL=accounts/fireworks/models/kimi-k3
 AI_BASE_URL=https://api.fireworks.ai/inference/v1
 ```

@@ -13,6 +13,7 @@
  */
 
 import { BINS, formatScore, scoreBin, scoreTier, TIER } from "@/lib/score";
+import { describeModel } from "@/lib/ai/model-label";
 
 // ---------------------------------------------------------------------------
 // The shape a report needs
@@ -637,6 +638,25 @@ export function buildReportHtml(data: ReportData): string {
     )
     .join("");
 
+  // Where the proposals went. A committee reading this deserves the answer
+  // without looking up a model id: the models named above ran on a US
+  // provider's servers, nothing was retained, and the models' developers
+  // never saw the documents.
+  const provenanceModels = [
+    ...new Set([...(data.scoringModels ?? []), ...(data.rankingModel ? [data.rankingModel] : [])]),
+  ]
+    .map((m) => describeModel(m))
+    .filter((d) => d.provenance);
+  const provenance = provenanceModels.length
+    ? `<p class="meta">${esc(
+        provenanceModels.length === 1
+          ? `${provenanceModels[0].name}: ${provenanceModels[0].provenance}`
+          : provenanceModels
+              .map((d) => `${d.name}: ${d.provenance}`)
+              .join(" ")
+      )}</p>`
+    : "";
+
   const stale = data.rankingStale
     ? `<p class="stale"><strong>This ranking is out of date.</strong>
        ${
@@ -713,10 +733,17 @@ export function buildReportHtml(data: ReportData): string {
       data.criteria.length
     )} criteria · ${esc(data.generatedAt)}${
       data.scoringModels?.length
-        ? ` · scored by ${data.scoringModels.map((m) => esc(m)).join(", ")}`
+        ? ` · scored by ${data.scoringModels
+            .map((m) => esc(describeModel(m).name))
+            .join(", ")}`
         : ""
-    }${data.rankingModel ? ` · ranked by ${esc(data.rankingModel)}` : ""}
+    }${
+      data.rankingModel
+        ? ` · ranked by ${esc(describeModel(data.rankingModel).name)}`
+        : ""
+    }
   </p>
+  ${provenance}
 
   ${verdict}
 

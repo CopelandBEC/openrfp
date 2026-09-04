@@ -8,6 +8,10 @@ export interface AIConfig {
   baseURL: string;
 }
 
+// Kimi K3 is an open-weight model; Fireworks AI, a US company, runs it on its
+// US servers without retaining prompts or outputs, and the model's developer
+// never receives anything. See lib/ai/model-label.ts for how that is said to
+// the owner.
 const DEFAULT_MODEL = "accounts/fireworks/models/kimi-k3";
 const DEFAULT_BASE_URL = "https://api.fireworks.ai/inference/v1";
 

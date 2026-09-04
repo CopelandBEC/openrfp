@@ -33,6 +33,7 @@ import { ScoreBar } from "@/components/viz/score-bar";
 import { TierChip } from "@/components/viz/tier-chip";
 import { formatScore, scoreTier, toPercent } from "@/lib/score";
 import { scoredAgainstCurrentRubric } from "@/lib/stage";
+import { describeModel } from "@/lib/ai/model-label";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -815,8 +816,16 @@ export default function EvaluationsPage({
                           <dl className="grid grid-cols-[auto_1fr] gap-x-4 gap-y-1 pt-2 text-xs text-muted-foreground">
                             <dt>Model</dt>
                             <dd className="text-foreground">
-                              {evaluation.model_used}
+                              {describeModel(evaluation.model_used).name}
                             </dd>
+                            {describeModel(evaluation.model_used).provenance && (
+                              <>
+                                <dt>Where it ran</dt>
+                                <dd className="text-foreground">
+                                  {describeModel(evaluation.model_used).provenance}
+                                </dd>
+                              </>
+                            )}
                             {evaluation.prompt_version && (
                               <>
                                 <dt>Prompt</dt>

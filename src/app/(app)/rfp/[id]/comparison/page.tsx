@@ -37,6 +37,7 @@ import {
   sameInstant,
   scoredAgainstCurrentRubric,
 } from "@/lib/stage";
+import { modelLabel } from "@/lib/ai/model-label";
 import {
   exportCsv,
   exportJson,
@@ -1269,7 +1270,7 @@ export default function ComparisonPage({
               first and every score, quote and page reference behind a
               disclosure.
               {comparison.model_used && (
-                <> Ranked by {comparison.model_used}.</>
+                <> Ranked by {modelLabel(comparison.model_used)}.</>
               )}
             </p>
           </>
