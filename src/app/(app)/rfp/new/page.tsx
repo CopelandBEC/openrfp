@@ -12,7 +12,7 @@ import { ErrorState } from "@/components/stage-state";
 import { cn } from "@/lib/utils";
 import { createClient } from "@/lib/supabase/client";
 import { readApiResponse } from "@/lib/api-response";
-import { discardDocument, uploadDocument } from "@/lib/storage-upload";
+import { reclaimUnlessReferenced, uploadDocument } from "@/lib/storage-upload";
 
 export default function NewRfpPage() {
   const router = useRouter();
@@ -63,7 +63,19 @@ export default function NewRfpPage() {
       // Navigate to the rubric generation step
       router.push(`/rfp/${result.data.rfp_id}/rubric?new=1`);
     } catch (err) {
-      if (orphan) await discardDocument(supabase, orphan);
+      // See the note in responses/page.tsx: the row may exist even though
+      // the answer never arrived. If it does, carry on to it.
+      if (orphan) {
+        const { referencedId } = await reclaimUnlessReferenced(
+          supabase,
+          { table: "rfps", column: "rfp_file_path" },
+          orphan
+        );
+        if (referencedId) {
+          router.push(`/rfp/${referencedId}/rubric?new=1`);
+          return;
+        }
+      }
       setError(err instanceof Error ? err.message : "Something went wrong");
     } finally {
       setLoading(false);

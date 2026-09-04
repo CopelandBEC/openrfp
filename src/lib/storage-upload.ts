@@ -81,3 +81,34 @@ export async function discardDocument(
 ): Promise<void> {
   await supabase.storage.from(BUCKET).remove([path]).catch(() => undefined);
 }
+
+/**
+ * After a request that did not clearly succeed, find out whether a row now
+ * references the object before deciding its fate.
+ *
+ * A request can fail ambiguously: the route inserted the row and the
+ * connection dropped before the answer arrived. Deleting the object then
+ * leaves a committed row pointing at nothing. So the browser asks the table
+ * — its own rows, by path — and only removes the object when no row claims
+ * it. Returns the referencing row's id when there is one, so the caller can
+ * carry on as if the answer had arrived.
+ */
+export async function reclaimUnlessReferenced(
+  supabase: SupabaseClient,
+  ref: { table: "responses" | "rfps"; column: "file_path" | "rfp_file_path" },
+  path: string
+): Promise<{ referencedId: string | null }> {
+  const { data, error } = await supabase
+    .from(ref.table)
+    .select("id")
+    .eq(ref.column, path)
+    .maybeSingle();
+  if (error) {
+    // Cannot tell. Leaving an object is recoverable; deleting a referenced
+    // one is not.
+    return { referencedId: null };
+  }
+  if (data?.id) return { referencedId: String(data.id) };
+  await discardDocument(supabase, path);
+  return { referencedId: null };
+}

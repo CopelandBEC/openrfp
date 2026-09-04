@@ -345,6 +345,13 @@ a function are not limited. The path layout is unchanged:
 `<user id>/<timestamp>-<name>` for an RFP. The bucket itself enforces the 25 MB
 and PDF-only limits, so the browser-side checks are a courtesy, not the guard.
 
+The row is the claim on a path: each route inserts it before reading the file
+back, and the unique indexes on `responses.file_path` and `rfps.rfp_file_path`
+in `schema.sql` are what make a second request for the same path fail before
+any download or parsing. **Re-run `schema.sql` before deploying this version**
+so those indexes exist; without them a burst of identical requests could each
+parse the same 25 MB object.
+
 Every API call in the client reads its response through `readApiResponse`,
 which parses JSON only when the body is JSON and otherwise says what the status
 means. A platform 413, 504 or 500 used to surface as

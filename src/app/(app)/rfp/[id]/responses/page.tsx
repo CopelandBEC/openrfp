@@ -18,7 +18,7 @@ import { AppHeader, PageIntro } from "@/components/app-shell";
 import { EmptyState, ErrorState } from "@/components/stage-state";
 import { scoredAgainstCurrentRubric } from "@/lib/stage";
 import { readApiResponse } from "@/lib/api-response";
-import { discardDocument, uploadDocument } from "@/lib/storage-upload";
+import { reclaimUnlessReferenced, uploadDocument } from "@/lib/storage-upload";
 import { cn } from "@/lib/utils";
 
 // ---------------------------------------------------------------------------
@@ -289,10 +289,36 @@ export default function ResponsesPage({
         ) as HTMLInputElement | null;
         if (fileInput) fileInput.value = "";
       } catch (err) {
-        // The route removes the object when it fails after reading it; a
-        // request that was refused earlier or never completed leaves that to
-        // us. Removing an already-removed object is harmless.
-        if (orphan) await discardDocument(supabase, orphan);
+        // A failure after the upload is ambiguous: the route may have inserted
+        // the row and the connection dropped before the answer arrived. So
+        // ask the table before touching the object — if a row references it,
+        // the upload succeeded and the list gets the row; if not, the object
+        // is reclaimed. Removing an object the route already removed is
+        // harmless.
+        if (orphan) {
+          const { referencedId } = await reclaimUnlessReferenced(
+            supabase,
+            { table: "responses", column: "file_path" },
+            orphan
+          );
+          if (referencedId) {
+            const { data: row } = await supabase
+              .from("responses")
+              .select(
+                "id, rfp_id, vendor_name, file_path, extracted_text, ocr_status, page_count, status, created_at"
+              )
+              .eq("id", referencedId)
+              .maybeSingle();
+            if (row) {
+              setResponses((prev) =>
+                prev.some((r) => r.id === row.id) ? prev : [...prev, row as Response]
+              );
+              setVendorName("");
+              setFile(null);
+              return;
+            }
+          }
+        }
         setError(
           err instanceof Error ? err.message : "Something went wrong during upload"
         );

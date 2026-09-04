@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createClient } from "@/lib/supabase/server";
 import { extractPdfText } from "@/lib/pdf/extract-text";
-import { readOwnedDocument } from "@/lib/storage-read";
+import { downloadDocument, validateOwnedPath } from "@/lib/storage-read";
 import { BUCKET } from "@/lib/storage-upload";
 
 // Parsing a large PDF can outrun the platform default, and the file now
@@ -14,8 +14,8 @@ export const maxDuration = 120;
  *
  * The browser has already put the PDF in storage — see lib/storage-upload.ts
  * for why the file no longer travels in this request — and sends its path.
- * This reads it back, extracts the text, and creates the row; if the row
- * cannot be created the object is removed rather than left orphaned.
+ * The row is inserted before the file is read back, as the claim on the path;
+ * see upload-response for why. If reading or parsing fails, row and object go.
  */
 export async function POST(request: NextRequest) {
   const supabase = await createClient();
@@ -32,62 +32,38 @@ export async function POST(request: NextRequest) {
     title?: unknown;
     description?: unknown;
   } | null;
-  const filePath = body?.file_path;
   const title = typeof body?.title === "string" ? body.title.trim() : "";
   const description =
     typeof body?.description === "string" ? body.description : "";
 
-  if (!filePath || !title) {
+  if (!body?.file_path || !title) {
     return NextResponse.json(
       { error: "File and title are required" },
       { status: 400 }
     );
   }
 
-  // A path creates one RFP; see upload-response for why this is checked
-  // before the read and backed by a unique index.
-  const { data: existing } = await supabase
-    .from("rfps")
-    .select("id")
-    .eq("rfp_file_path", filePath as string)
-    .maybeSingle();
-  if (existing) {
-    return NextResponse.json(
-      { error: "That file has already been used to create an RFP." },
-      { status: 409 }
-    );
+  const check = validateOwnedPath(user, body.file_path, null);
+  if (!check.ok) {
+    return NextResponse.json({ error: check.error }, { status: check.status });
   }
+  const fileName = body.file_path as string;
 
-  const read = await readOwnedDocument(supabase, user, filePath, null);
-  if (!read.ok) {
-    return NextResponse.json({ error: read.error }, { status: read.status });
-  }
-  const fileName = filePath as string;
-
-  // Extract text and flag PDFs that appear to lack an OCR layer
-  const {
-    text: extractedText,
-    pageCount,
-    likelyScanned,
-  } = await extractPdfText(read.bytes);
-  const ocrStatus = likelyScanned ? "flagged" : "ok";
-
-  // Create RFP record
-  const { data: rfp, error: rfpError } = await supabase
+  // Claim the path.
+  const { data: rfp, error: claimError } = await supabase
     .from("rfps")
     .insert({
       owner_id: user.id,
       title,
       description,
       rfp_file_path: fileName,
-      rfp_text: extractedText,
       status: "draft",
     })
-    .select()
+    .select("id")
     .single();
 
-  if (rfpError) {
-    if (rfpError.code === "23505") {
+  if (claimError || !rfp) {
+    if (claimError?.code === "23505") {
       return NextResponse.json(
         { error: "That file has already been used to create an RFP." },
         { status: 409 }
@@ -98,7 +74,7 @@ export async function POST(request: NextRequest) {
     // A guest who has hit their RFP cap trips the row-level security check on
     // insert. That is a limit, not a fault, and "Failed to create RFP" would
     // send them off looking for a broken upload.
-    if (rfpError.code === "42501") {
+    if (claimError?.code === "42501") {
       return NextResponse.json(
         {
           error:
@@ -108,8 +84,47 @@ export async function POST(request: NextRequest) {
         { status: 403 }
       );
     }
+    console.error("Failed to create RFP:", claimError?.message);
+    return NextResponse.json(
+      { error: "Failed to create RFP" },
+      { status: 500 }
+    );
+  }
 
-    console.error("Failed to create RFP:", rfpError.message);
+  const dl = await downloadDocument(supabase, fileName);
+  if (!dl.ok) {
+    await supabase.from("rfps").delete().eq("id", rfp.id);
+    await supabase.storage.from(BUCKET).remove([fileName]);
+    return NextResponse.json({ error: dl.error }, { status: dl.status });
+  }
+
+  let extractedText: string;
+  let pageCount: number;
+  let likelyScanned: boolean;
+  try {
+    ({ text: extractedText, pageCount, likelyScanned } = await extractPdfText(
+      dl.bytes
+    ));
+  } catch (err) {
+    await supabase.from("rfps").delete().eq("id", rfp.id);
+    await supabase.storage.from(BUCKET).remove([fileName]);
+    console.error("Failed to read PDF:", err instanceof Error ? err.message : err);
+    return NextResponse.json(
+      { error: "That PDF could not be read. Try re-saving it and uploading again." },
+      { status: 422 }
+    );
+  }
+  const ocrStatus = likelyScanned ? "flagged" : "ok";
+
+  const { error: fillError } = await supabase
+    .from("rfps")
+    .update({ rfp_text: extractedText })
+    .eq("id", rfp.id);
+
+  if (fillError) {
+    await supabase.from("rfps").delete().eq("id", rfp.id);
+    await supabase.storage.from(BUCKET).remove([fileName]);
+    console.error("Failed to store RFP text:", fillError.message);
     return NextResponse.json(
       { error: "Failed to create RFP" },
       { status: 500 }
@@ -123,8 +138,8 @@ export async function POST(request: NextRequest) {
     action: "upload_rfp",
     details: {
       title,
-      file_name: read.fileName,
-      size_bytes: read.size,
+      file_name: check.fileName,
+      size_bytes: dl.size,
       ocr_status: ocrStatus,
     },
   });

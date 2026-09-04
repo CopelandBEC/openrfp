@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { createClient } from "@/lib/supabase/server";
 import { extractPdfText } from "@/lib/pdf/extract-text";
 import { isGuest } from "@/lib/auth/guest";
-import { readOwnedDocument } from "@/lib/storage-read";
+import { downloadDocument, validateOwnedPath } from "@/lib/storage-read";
 import { BUCKET } from "@/lib/storage-upload";
 
 // Parsing a large PDF can outrun the platform default, and the file now
@@ -15,9 +15,13 @@ export const maxDuration = 120;
  *
  * The browser has already put the PDF in storage — see lib/storage-upload.ts
  * for why the file no longer travels in this request — and sends its path.
- * This reads it back, extracts the text, and creates the row. If anything
- * after the read fails, the object is removed rather than left with no row
- * referencing it and, for a guest, occupying one of their capped slots.
+ *
+ * The row is the claim. It is inserted *before* the file is read back, with
+ * the text still to come, so that a second request for the same path is
+ * refused by the unique index on `file_path` before a byte is downloaded or
+ * parsed. Checked after the parse, one stored object could be turned into
+ * many concurrent 25 MB reads and parses by cheap repeated requests. If
+ * reading or parsing then fails, the row and the object both go.
  */
 export async function POST(request: NextRequest) {
   const supabase = await createClient();
@@ -34,78 +38,51 @@ export async function POST(request: NextRequest) {
     vendor_name?: unknown;
     rfp_id?: unknown;
   } | null;
-  const filePath = body?.file_path;
   const vendorName =
     typeof body?.vendor_name === "string" ? body.vendor_name.trim() : "";
   const rfpId = typeof body?.rfp_id === "string" ? body.rfp_id : "";
 
-  if (!filePath || !vendorName || !rfpId) {
+  if (!body?.file_path || !vendorName || !rfpId) {
     return NextResponse.json(
       { error: "File, vendor name, and RFP ID are required" },
       { status: 400 }
     );
   }
 
-  // A path is attached once. Without this, the same owner-held path could be
-  // posted again and again, each time re-reading up to 25 MB, parsing it and
-  // inserting another row; checked before the read so a repeat costs nothing,
-  // and backed by a unique index on `file_path` so two concurrent requests
-  // cannot both get through.
-  const { data: existing } = await supabase
-    .from("responses")
-    .select("id")
-    .eq("file_path", filePath as string)
-    .maybeSingle();
-  if (existing) {
-    return NextResponse.json(
-      { error: "That file has already been added to this RFP." },
-      { status: 409 }
-    );
+  const check = validateOwnedPath(user, body.file_path, rfpId);
+  if (!check.ok) {
+    return NextResponse.json({ error: check.error }, { status: check.status });
   }
+  const fileName = body.file_path as string;
 
-  const read = await readOwnedDocument(supabase, user, filePath, rfpId);
-  if (!read.ok) {
-    return NextResponse.json({ error: read.error }, { status: read.status });
-  }
-  const fileName = filePath as string;
-
-  // Extract text and flag PDFs that appear to lack an OCR layer
-  const {
-    text: extractedText,
-    pageCount,
-    likelyScanned,
-  } = await extractPdfText(read.bytes);
-  const ocrStatus = likelyScanned ? "flagged" : "ok";
-
-  // Create response record
-  const { data: responseRecord, error: responseError } = await supabase
+  // Claim the path.
+  const { data: claimed, error: claimError } = await supabase
     .from("responses")
     .insert({
       rfp_id: rfpId,
       vendor_name: vendorName,
       file_path: fileName,
-      extracted_text: extractedText,
-      ocr_status: ocrStatus,
-      page_count: pageCount,
       status: "pending",
     })
-    .select()
+    .select("id")
     .single();
 
-  if (responseError) {
-    // Lost a race with an identical request: the winner's row references
-    // this object, so it must not be removed.
-    if (responseError.code === "23505") {
+  if (claimError || !claimed) {
+    // Another request already holds this path; its row references the
+    // object, so the object stays.
+    if (claimError?.code === "23505") {
       return NextResponse.json(
         { error: "That file has already been added to this RFP." },
         { status: 409 }
       );
     }
+    // Nothing references the object from here on. Remove it rather than leave
+    // it with no row and, for a guest, occupying one of their capped slots.
     await supabase.storage.from(BUCKET).remove([fileName]);
 
     // A guest at their response cap trips the row-level security check on
     // insert. That is a limit, not a fault.
-    if (responseError.code === "42501" && isGuest(user)) {
+    if (claimError?.code === "42501" && isGuest(user)) {
       return NextResponse.json(
         {
           error:
@@ -115,8 +92,52 @@ export async function POST(request: NextRequest) {
         { status: 403 }
       );
     }
+    console.error("Failed to create response:", claimError?.message);
+    return NextResponse.json(
+      { error: "Failed to create response record" },
+      { status: 500 }
+    );
+  }
 
-    console.error("Failed to create response:", responseError.message);
+  // Read the file back and extract text, now that the path is ours alone.
+  const dl = await downloadDocument(supabase, fileName);
+  if (!dl.ok) {
+    await supabase.from("responses").delete().eq("id", claimed.id);
+    await supabase.storage.from(BUCKET).remove([fileName]);
+    return NextResponse.json({ error: dl.error }, { status: dl.status });
+  }
+
+  let extractedText: string;
+  let pageCount: number;
+  let likelyScanned: boolean;
+  try {
+    ({ text: extractedText, pageCount, likelyScanned } = await extractPdfText(
+      dl.bytes
+    ));
+  } catch (err) {
+    await supabase.from("responses").delete().eq("id", claimed.id);
+    await supabase.storage.from(BUCKET).remove([fileName]);
+    console.error("Failed to read PDF:", err instanceof Error ? err.message : err);
+    return NextResponse.json(
+      { error: "That PDF could not be read. Try re-saving it and uploading again." },
+      { status: 422 }
+    );
+  }
+  const ocrStatus = likelyScanned ? "flagged" : "ok";
+
+  const { error: fillError } = await supabase
+    .from("responses")
+    .update({
+      extracted_text: extractedText,
+      ocr_status: ocrStatus,
+      page_count: pageCount,
+    })
+    .eq("id", claimed.id);
+
+  if (fillError) {
+    await supabase.from("responses").delete().eq("id", claimed.id);
+    await supabase.storage.from(BUCKET).remove([fileName]);
+    console.error("Failed to store extracted text:", fillError.message);
     return NextResponse.json(
       { error: "Failed to create response record" },
       { status: 500 }
@@ -130,14 +151,14 @@ export async function POST(request: NextRequest) {
     action: "upload_response",
     details: {
       vendor_name: vendorName,
-      file_name: read.fileName,
-      size_bytes: read.size,
+      file_name: check.fileName,
+      size_bytes: dl.size,
       ocr_status: ocrStatus,
     },
   });
 
   return NextResponse.json({
-    response_id: responseRecord.id,
+    response_id: claimed.id,
     file_path: fileName,
     ocr_status: ocrStatus,
     page_count: pageCount,
