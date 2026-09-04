@@ -171,8 +171,9 @@ async function verifySchema() {
   ok("ai_usage client write grants revoked", should_be_zero === 0, `(${should_be_zero})`);
   allGood &&= should_be_zero === 0;
   const [bucket] = await sql(BUCKET_CHECK);
-  const bucketOk = bucket?.file_size_limit === 26214400 && JSON.stringify(bucket?.allowed_mime_types) === '["application/pdf"]';
-  ok("bucket ceilings 25 MB / PDF only", bucketOk, JSON.stringify(bucket));
+  const expectedMimes = ["application/pdf", "application/vnd.openxmlformats-officedocument.wordprocessingml.document"];
+  const bucketOk = bucket?.file_size_limit === 26214400 && JSON.stringify(bucket?.allowed_mime_types) === JSON.stringify(expectedMimes);
+  ok("bucket ceilings 25 MB / PDF and DOCX only", bucketOk, JSON.stringify(bucket));
   allGood &&= bucketOk;
   if (checks.ai_limits_table) {
     const limits = await sql("select * from public.ai_limits");

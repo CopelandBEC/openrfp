@@ -12,6 +12,7 @@ import { ErrorState } from "@/components/stage-state";
 import { cn } from "@/lib/utils";
 import { createClient } from "@/lib/supabase/client";
 import { readApiResponse } from "@/lib/api-response";
+import { ACCEPT_ATTRIBUTE, ACCEPTED_LABEL } from "@/lib/documents/types";
 import {
   forgetPending,
   readPending,
@@ -243,14 +244,14 @@ export default function NewRfpPage() {
                     Drop your RFP here
                   </p>
                   <p className="mt-0.5 text-xs text-muted-foreground">
-                    PDF, up to 25MB
+                    {ACCEPTED_LABEL}
                   </p>
                 </>
               )}
               <input
                 id="rfp-file"
                 type="file"
-                accept=".pdf,application/pdf"
+                accept={ACCEPT_ATTRIBUTE}
                 className="sr-only"
                 onChange={(e) => {
                   if (e.target.files?.[0]) setFile(e.target.files[0]);

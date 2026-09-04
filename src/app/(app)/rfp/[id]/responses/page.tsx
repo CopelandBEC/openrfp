@@ -19,6 +19,12 @@ import { EmptyState, ErrorState, WorkingInline } from "@/components/stage-state"
 import { scoredAgainstCurrentRubric } from "@/lib/stage";
 import { readApiResponse } from "@/lib/api-response";
 import {
+  ACCEPT_ATTRIBUTE,
+  ACCEPTED_LABEL,
+  UNSUPPORTED_TYPE_MESSAGE,
+  kindOfFile,
+} from "@/lib/documents/types";
+import {
   forgetPending,
   readPending,
   reconcileAfterFailure,
@@ -50,8 +56,6 @@ interface Response {
 // ---------------------------------------------------------------------------
 
 const MAX_FILE_SIZE = 25 * 1024 * 1024; // 25MB
-const ALLOWED_EXTENSIONS = [".pdf"];
-const ALLOWED_MIME_TYPES = ["application/pdf"];
 
 /**
  * How many proposals to evaluate at once.
@@ -87,9 +91,8 @@ function validateFile(file: File): string | null {
   if (file.size > MAX_FILE_SIZE) {
     return "File is too large. Maximum size is 25MB.";
   }
-  const ext = file.name.toLowerCase().slice(file.name.lastIndexOf("."));
-  if (!ALLOWED_EXTENSIONS.includes(ext) && !ALLOWED_MIME_TYPES.includes(file.type)) {
-    return "Only PDF files are supported right now. Export Word documents to PDF first.";
+  if (!kindOfFile(file)) {
+    return UNSUPPORTED_TYPE_MESSAGE;
   }
   return null;
 }
@@ -424,7 +427,7 @@ export default function ResponsesPage({
       setError("");
       setFileError("");
       try {
-        // The PDF goes straight to storage from here; the route gets its
+        // The file goes straight to storage from here; the route gets its
         // path. See lib/storage-upload.ts for why — the short version is that
         // the hosting platform stops request bodies at 4.5 MB, before the
         // route runs, and proposals with drawings in them are bigger.
@@ -671,8 +674,9 @@ export default function ResponsesPage({
 
       <main className="container mx-auto max-w-2xl px-4 py-10">
         <PageIntro eyebrow="Step 2 of 4" title="Add the proposals">
-          One PDF per vendor. Each one gets scored against the rubric you just
-          accepted, with the passage behind every score quoted back to you.
+          One file per vendor, PDF or Word. Each one gets scored against the
+          rubric you just accepted, with the passage behind every score quoted
+          back to you.
         </PageIntro>
 
         {/* ------------------------------------------------------------------
@@ -680,7 +684,7 @@ export default function ResponsesPage({
          *
          * The drop target is now the primary element rather than a thin strip
          * under a label, and it reacts while a file is over it — dropping a
-         * PDF onto a box that never acknowledges it is the moment people
+         * file onto a box that never acknowledges it is the moment people
          * assume the app is broken.
          * --------------------------------------------------------------- */}
         <form onSubmit={handleUpload} className="mt-8 space-y-4">
@@ -732,14 +736,14 @@ export default function ResponsesPage({
                   Drop a proposal here
                 </p>
                 <p className="mt-0.5 text-xs text-muted-foreground">
-                  PDF, up to 25MB
+                  {ACCEPTED_LABEL}
                 </p>
               </>
             )}
             <input
               id="file-input"
               type="file"
-              accept=".pdf,application/pdf"
+              accept={ACCEPT_ATTRIBUTE}
               className="hidden"
               onChange={(e) => {
                 if (e.target.files?.[0]) {
@@ -877,8 +881,8 @@ export default function ResponsesPage({
                         aria-hidden="true"
                       />
                       <p className="text-xs leading-snug text-foreground">
-                        This PDF looks like scanned images, so there is little
-                        text to read. Run OCR on it and re-upload, or the
+                        This file has little readable text — it looks like
+                        scanned images. Run OCR on it and re-upload, or the
                         scores will reflect the scan rather than the proposal.{" "}
                         <a
                           href="https://www.adobe.com/acrobat/online/ocr-pdf.html"

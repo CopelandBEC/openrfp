@@ -1,6 +1,9 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createClient } from "@/lib/supabase/server";
-import { extractPdfText } from "@/lib/pdf/extract-text";
+import {
+  UnsupportedDocumentError,
+  extractDocumentText,
+} from "@/lib/documents/extract-text";
 import { isGuest } from "@/lib/auth/guest";
 import {
   claimUpload,
@@ -12,7 +15,7 @@ import {
 import { BUCKET } from "@/lib/storage-upload";
 import { hashClientIp } from "@/lib/client-ip";
 
-// Parsing a large PDF can outrun the platform default, and the file now
+// Parsing a large document can outrun the platform default, and the file now
 // arrives from storage rather than in the request, so the 25 MB the app
 // promises actually reaches this code. The claim functions treat anything in
 // flight longer than 3 minutes as abandoned; keep this below that.
@@ -21,7 +24,7 @@ export const maxDuration = 120;
 /**
  * Attach an uploaded proposal to an RFP.
  *
- * The browser has already put the PDF in storage — see lib/storage-upload.ts
+ * The browser has already put the file in storage — see lib/storage-upload.ts
  * for why the file no longer travels in this request — and sends its path.
  *
  * Order matters. The path is claimed first, in a table the caller cannot
@@ -132,14 +135,24 @@ export async function POST(request: NextRequest) {
   let pageCount: number;
   let likelyScanned: boolean;
   try {
-    ({ text: extractedText, pageCount, likelyScanned } = await extractPdfText(
-      dl.bytes
+    ({ text: extractedText, pageCount, likelyScanned } = await extractDocumentText(
+      dl.bytes,
+      check.fileName
     ));
   } catch (err) {
     await abandon();
-    console.error("Failed to read PDF:", err instanceof Error ? err.message : err);
+    if (err instanceof UnsupportedDocumentError) {
+      return NextResponse.json(
+        {
+          error:
+            "That file is not a PDF or a Word (.docx) document. Older .doc files need to be saved as .docx or exported to PDF first.",
+        },
+        { status: 400 }
+      );
+    }
+    console.error("Failed to read document:", err instanceof Error ? err.message : err);
     return NextResponse.json(
-      { error: "That PDF could not be read. Try re-saving it and uploading again." },
+      { error: "That file could not be read. Try re-saving it and uploading again." },
       { status: 422 }
     );
   }
@@ -232,7 +245,7 @@ export async function POST(request: NextRequest) {
     page_count: pageCount,
     message:
       ocrStatus === "flagged"
-        ? "This PDF appears to lack OCR text. Please OCR it and re-upload for best results."
+        ? "This document has almost no readable text. If it is a scan, OCR it and re-upload for best results."
         : "Response uploaded successfully",
   });
 }

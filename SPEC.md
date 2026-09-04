@@ -767,7 +767,7 @@ At this cost, the free tier can handle ~500-1,000 evaluation sessions per month 
 | **BYOK (Option C)** | High | Users paste their own API key for unlimited evaluations |
 | **Cost dashboard** | Medium | Show users how much their evaluations cost (transparency) |
 | **Smart page selection** | Medium | Pre-process to identify pages with visual content, send only those as images |
-| **Multi-format support** | Medium | .docx, .xlsx native parsing (currently PDF-only) |
+| **Multi-format support** | Medium | .xlsx native parsing (.pdf and .docx are supported) |
 | **Rubric templates** | Medium | Save and reuse rubrics across similar RFPs |
 | **Collaborative review** | Low | Multiple reviewers on one evaluation (adds complexity) |
 | **Built-in OCR** | Low | Tesseract.js or similar for in-app OCR (removes external step) |
