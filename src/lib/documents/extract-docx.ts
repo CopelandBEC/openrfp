@@ -291,8 +291,10 @@ function assertTreeWithinBudget(document: unknown): void {
         `Document holds more than ${MAX_TEXT_CHARS} characters of text and link targets`
       );
     }
-    if (Array.isArray(node.children)) stack.push(...node.children);
-    if (Array.isArray(node.body)) stack.push(...node.body);
+    // Pushed one at a time: spreading a million children into one call is
+    // itself a stack overflow.
+    for (const child of node.children ?? []) stack.push(child);
+    for (const child of node.body ?? []) stack.push(child);
   }
 }
 

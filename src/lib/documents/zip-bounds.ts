@@ -20,6 +20,20 @@ import { inflateRawSync } from "node:zlib";
 export const MAX_ZIP_ENTRIES = 5_000;
 export const MAX_ENTRY_BYTES = 64 * 1024 * 1024;
 export const MAX_EXPANDED_BYTES = 256 * 1024 * 1024;
+/**
+ * Bytes bound bytes, not nodes: sixty megabytes of `<w:p/>` is ten million
+ * elements, each a DOM object once mammoth's XML parser has built it, and
+ * none of them text. The inflated XML parts are already in hand here, so
+ * their tags are counted — every `<` is a start tag, an end tag or a
+ * comment — and the total capped.
+ *
+ * The cap is set by what mammoth can parse in a serverless function, not by
+ * what a document might hold. Measured: 720 k tags of text paragraphs parse
+ * within a 512 MB heap; 1.2 M need a gigabyte. Six hundred thousand is
+ * roughly a hundred thousand plain paragraphs, some two hundred pages; a
+ * heavily formatted proposal reaches it sooner, and is told to export to PDF.
+ */
+export const MAX_XML_TAGS = 600_000;
 
 /** A document that would take more than one request can hold, however so. */
 export class DocumentTooLargeError extends Error {
@@ -52,6 +66,7 @@ const METHOD_DEFLATE = 8;
 const ZIP64 = 0xffffffff;
 
 interface Entry {
+  name: string;
   method: number;
   compressedSize: number;
   declaredSize: number;
@@ -73,11 +88,16 @@ export function assertZipWithinBounds(buf: Buffer): void {
   }
 
   let actualTotal = 0;
+  let tags = 0;
   for (const e of entries) {
-    const actual = measureEntry(buf, e);
-    actualTotal += actual;
+    const measured = measureEntry(buf, e);
+    actualTotal += measured.bytes;
     if (actualTotal > MAX_EXPANDED_BYTES) {
       throw new ZipTooLargeError(`entries expand to ${actualTotal}+ bytes in total`);
+    }
+    tags += measured.tags;
+    if (tags > MAX_XML_TAGS) {
+      throw new ZipTooLargeError(`XML parts hold more than ${MAX_XML_TAGS} tags`);
     }
   }
 }
@@ -130,7 +150,9 @@ function readCentralDirectory(buf: Buffer): Entry[] {
     if (compressedSize === ZIP64 || declaredSize === ZIP64 || localHeaderOffset === ZIP64) {
       throw new ZipTooLargeError("zip64 entry");
     }
-    entries.push({ method, compressedSize, declaredSize, localHeaderOffset });
+    if (pos + 46 + nameLen > eocd) throw new ZipCorruptError("entry name runs past the directory");
+    const name = buf.toString("utf8", pos + 46, pos + 46 + nameLen);
+    entries.push({ name, method, compressedSize, declaredSize, localHeaderOffset });
     if (entries.length > MAX_ZIP_ENTRIES) {
       throw new ZipTooLargeError(`more than ${MAX_ZIP_ENTRIES} entries`);
     }
@@ -147,8 +169,11 @@ function readCentralDirectory(buf: Buffer): Entry[] {
   return entries;
 }
 
-/** Inflate one entry under the cap and return how many bytes it really is. */
-function measureEntry(buf: Buffer, e: Entry): number {
+/**
+ * Inflate one entry under the cap and return how many bytes it really is,
+ * and, for an XML part, how many tags it holds.
+ */
+function measureEntry(buf: Buffer, e: Entry): { bytes: number; tags: number } {
   const h = e.localHeaderOffset;
   if (h + 30 > buf.length || buf.readUInt32LE(h) !== LOCAL_SIGNATURE) {
     throw new ZipCorruptError("bad local file header");
@@ -161,21 +186,33 @@ function measureEntry(buf: Buffer, e: Entry): number {
     throw new ZipCorruptError("entry data runs past the end of the file");
   }
 
+  const isXml = /\.(xml|rels)$/i.test(e.name);
   if (e.method === METHOD_STORED) {
-    return e.compressedSize;
+    const data = buf.subarray(start, end);
+    return { bytes: data.length, tags: isXml ? countTags(data) : 0 };
   }
   if (e.method !== METHOD_DEFLATE) {
     // Neither JSZip nor Word produces anything else; refuse rather than guess.
     throw new ZipCorruptError(`unsupported compression method ${e.method}`);
   }
   try {
-    return inflateRawSync(buf.subarray(start, end), {
+    const data = inflateRawSync(buf.subarray(start, end), {
       maxOutputLength: MAX_ENTRY_BYTES,
-    }).length;
+    });
+    return { bytes: data.length, tags: isXml ? countTags(data) : 0 };
   } catch (err) {
     if ((err as NodeJS.ErrnoException)?.code === "ERR_BUFFER_TOO_LARGE") {
       throw new ZipTooLargeError(`an entry inflates past ${MAX_ENTRY_BYTES} bytes`);
     }
     throw new ZipCorruptError("entry does not inflate");
   }
+}
+
+/** Every `<` opens a tag of some kind; `indexOf` keeps the scan native. */
+function countTags(data: Buffer): number {
+  let n = 0;
+  for (let i = data.indexOf(0x3c); i !== -1; i = data.indexOf(0x3c, i + 1)) {
+    if (++n > MAX_XML_TAGS) break;
+  }
+  return n;
 }
