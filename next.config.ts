@@ -6,7 +6,13 @@ const nextConfig: NextConfig = {
   // path pointing at a file that was never copied ("Setting up fake worker
   // failed"), so every upload came back as "may need OCR". Loading it through
   // Node's own require keeps the package layout intact.
-  serverExternalPackages: ["pdf-parse", "pdfjs-dist"],
+  //
+  // mammoth and jszip (the .docx path) are pure JavaScript and would bundle,
+  // but both carry `browser` field remaps for their zip and stream code. Kept
+  // external for the same reason: the package layout on disk is the one the
+  // library was tested against. Their requires are static, so the tracer
+  // finds them without help.
+  serverExternalPackages: ["pdf-parse", "pdfjs-dist", "mammoth", "jszip"],
 
   // Keeping the package external is not enough on Vercel, where a function
   // ships only the files the build could trace. pdfjs loads its worker by a
