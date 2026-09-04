@@ -237,8 +237,13 @@ function renderRow(table: TableContext, cells: CellBuffer[]): string[] {
       table.carry.set(col, { text, remaining: cell.rowspan - 1 });
     }
     col++;
+    // The extra columns of a spanning cell are covered too: carry an empty
+    // column into the rows below so nothing shifts into the merged region.
     for (let i = 1; i < cell.colspan; i++) {
       cols.push("");
+      if (cell.rowspan > 1) {
+        table.carry.set(col, { text: "", remaining: cell.rowspan - 1 });
+      }
       col++;
     }
   }
