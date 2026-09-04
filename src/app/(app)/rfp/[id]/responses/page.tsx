@@ -556,7 +556,6 @@ export default function ResponsesPage({
 
     let successCount = 0;
     let errorCount = 0;
-    let finished = 0;
 
     // Reads beside the elapsed clock in the sticky bar, so no trailing
     // ellipsis: the travelling bar next to it already says "still going".
@@ -616,8 +615,15 @@ export default function ResponsesPage({
         console.error(`Evaluation failed for ${response.vendor_name}:`, errMsg);
       }
 
-      finished++;
-      setEvalProgress(`${finished} of ${toEvaluate.length} scored`);
+      // Count what is scored, not what has been attempted. A failure still
+      // finishes, so counting attempts would say "1 of 3 scored" while that
+      // row's own badge said Failed — and the number a reader takes from this
+      // line is how many results they can actually use.
+      setEvalProgress(
+        errorCount > 0
+          ? `${successCount} of ${toEvaluate.length} scored, ${errorCount} failed`
+          : `${successCount} of ${toEvaluate.length} scored`
+      );
     };
 
     // Evaluations are independent of one another, so run several at once: done
