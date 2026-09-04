@@ -70,6 +70,15 @@ export async function POST(request: NextRequest) {
       { status: 409 }
     );
   }
+  if (claim.state === "limited") {
+    const minutes = Math.max(1, Math.ceil(claim.retryAfterSeconds / 60));
+    return NextResponse.json(
+      {
+        error: `You've reached this hour's limit on document uploads. Try again in about ${minutes} minute${minutes === 1 ? "" : "s"}.`,
+      },
+      { status: 429, headers: { "Retry-After": String(claim.retryAfterSeconds) } }
+    );
+  }
   if (claim.state === "missing") {
     return NextResponse.json(
       { error: "The uploaded file could not be found. Please try the upload again." },

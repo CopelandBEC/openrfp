@@ -63,6 +63,19 @@ export async function POST(request: NextRequest) {
   }
   const fileName = body.file_path as string;
 
+  // The RFP has to be the caller's before anything is read or parsed. The
+  // insert's row-level security would refuse this too, but only after a
+  // 25 MB download and parse; row-level security scopes this select, so a
+  // missing row is a foreign or nonexistent RFP either way.
+  const { data: rfp } = await supabase
+    .from("rfps")
+    .select("id")
+    .eq("id", rfpId)
+    .maybeSingle();
+  if (!rfp) {
+    return NextResponse.json({ error: "RFP not found" }, { status: 404 });
+  }
+
   const claim = await claimUpload(supabase, fileName);
   if (claim.state === "error") {
     console.error("Failed to claim upload:", claim.error);
@@ -75,6 +88,15 @@ export async function POST(request: NextRequest) {
     return NextResponse.json(
       { error: "That file has already been added to this RFP." },
       { status: 409 }
+    );
+  }
+  if (claim.state === "limited") {
+    const minutes = Math.max(1, Math.ceil(claim.retryAfterSeconds / 60));
+    return NextResponse.json(
+      {
+        error: `You've reached this hour's limit on document uploads. Try again in about ${minutes} minute${minutes === 1 ? "" : "s"}.`,
+      },
+      { status: 429, headers: { "Retry-After": String(claim.retryAfterSeconds) } }
     );
   }
   if (claim.state === "missing") {

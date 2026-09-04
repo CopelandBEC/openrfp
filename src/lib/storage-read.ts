@@ -123,6 +123,8 @@ export type Claim =
   | { state: "completed" }
   /** No such object in the caller's folder. */
   | { state: "missing" }
+  /** The caller's hourly parsing budget is spent. */
+  | { state: "limited"; retryAfterSeconds: number }
   | { state: "error"; error: string };
 
 export async function claimUpload(
@@ -131,9 +133,20 @@ export async function claimUpload(
 ): Promise<Claim> {
   const { data, error } = await supabase.rpc("claim_upload", { p_path: path });
   if (error) return { state: "error", error: error.message };
-  const d = data as { state?: unknown; token?: unknown } | null;
+  const d = data as {
+    state?: unknown;
+    token?: unknown;
+    retry_after_seconds?: unknown;
+  } | null;
   if (d?.state === "claimed" && typeof d.token === "string") {
     return { state: "claimed", token: d.token };
+  }
+  if (d?.state === "limited") {
+    return {
+      state: "limited",
+      retryAfterSeconds:
+        typeof d.retry_after_seconds === "number" ? d.retry_after_seconds : 60,
+    };
   }
   if (d?.state === "busy" || d?.state === "completed" || d?.state === "missing") {
     return { state: d.state };

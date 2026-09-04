@@ -143,6 +143,15 @@ export default function NewRfpPage() {
       // lib/storage-upload.ts for why the file no longer rides in the request.
       const uploaded = await uploadDocument(supabase, file, null);
       if (!uploaded.ok) {
+        // See the responses screen: an object that may exist and could not be
+        // removed is remembered for the next visit to settle.
+        if (uploaded.orphanPath) {
+          rememberPending(pendingScope, {
+            path: uploaded.orphanPath,
+            startedAt: Date.now(),
+            fields: { title, description },
+          });
+        }
         throw new Error(uploaded.error);
       }
       const rfpId = await settleUpload(

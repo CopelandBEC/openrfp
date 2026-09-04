@@ -23,7 +23,12 @@ export const BUCKET = "rfp-files";
 
 export type UploadOutcome =
   | { ok: true; path: string }
-  | { ok: false; error: string };
+  /**
+   * `orphanPath` is set when the request failed but the object may exist and
+   * could not be removed; the caller remembers it so a later visit can settle
+   * it. See `rememberPending`.
+   */
+  | { ok: false; error: string; orphanPath?: string };
 
 export async function uploadDocument(
   supabase: SupabaseClient,
@@ -64,13 +69,16 @@ export async function uploadDocument(
   } catch (thrown) {
     // The request itself failed — but the server may have accepted the object
     // before the connection dropped. Nothing references it yet, so remove it
-    // if it is there; removing what is not there is harmless.
-    await discardDocument(supabase, path);
+    // if it is there; removing what is not there is harmless. If even that
+    // fails (connectivity is probably still down) the path goes back to the
+    // caller to remember.
+    const removed = await discardDocument(supabase, path);
     return {
       ok: false,
       error: `Failed to upload file: ${
         thrown instanceof Error ? thrown.message : "the connection dropped"
       }`,
+      ...(removed ? {} : { orphanPath: path }),
     };
   }
 
@@ -89,12 +97,22 @@ export async function uploadDocument(
   return { ok: true, path };
 }
 
-/** Best-effort removal of an object the caller could not make use of. */
+/**
+ * Remove an object the caller could not make use of. Returns whether the
+ * removal is known to have succeeded: a returned error or a thrown request
+ * both mean the object may still be there, and callers keep the path until
+ * a removal is confirmed rather than assume it is gone.
+ */
 export async function discardDocument(
   supabase: SupabaseClient,
   path: string
-): Promise<void> {
-  await supabase.storage.from(BUCKET).remove([path]).catch(() => undefined);
+): Promise<boolean> {
+  try {
+    const { error } = await supabase.storage.from(BUCKET).remove([path]);
+    return !error;
+  } catch {
+    return false;
+  }
 }
 
 /**
@@ -156,8 +174,11 @@ export async function reconcileAfterFailure(
     return { state: "processing" };
   }
 
-  await discardDocument(supabase, path);
-  return { state: "reclaimed" };
+  // Only a confirmed removal is "reclaimed"; otherwise the caller keeps the
+  // path and tries again later.
+  return (await discardDocument(supabase, path))
+    ? { state: "reclaimed" }
+    : { state: "unknown" };
 }
 
 /**

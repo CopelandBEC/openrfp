@@ -409,6 +409,16 @@ export default function ResponsesPage({
         // route runs, and proposals with drawings in them are bigger.
         const uploaded = await uploadDocument(supabase, file, id);
         if (!uploaded.ok) {
+          // The object may exist and could not be removed. Remembered, so the
+          // next visit settles it — reclaiming it, or finishing it if a claim
+          // turns out to have been taken.
+          if (uploaded.orphanPath) {
+            rememberPending(pendingScope, {
+              path: uploaded.orphanPath,
+              startedAt: Date.now(),
+              fields: { vendor_name: name },
+            });
+          }
           throw new Error(uploaded.error);
         }
         await settleUpload(uploaded.path, { vendor_name: name }, true);
@@ -420,7 +430,7 @@ export default function ResponsesPage({
         setUploading(false);
       }
     },
-    [file, vendorName, id, supabase, settleUpload]
+    [file, vendorName, id, supabase, settleUpload, pendingScope]
   );
 
   // -----------------------------------------------------------------------

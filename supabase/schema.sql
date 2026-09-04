@@ -253,6 +253,21 @@ revoke all on table public.upload_claims from anon, authenticated;
 grant select (path, user_id, claimed_at, completed_at)
   on public.upload_claims to authenticated;
 
+-- Every claim decision that goes ahead is also an attempt, recorded here
+-- whether or not the upload then succeeds — a durable per-account budget for
+-- parsing, checked before any download. A claim released after a failed parse
+-- leaves no claim behind, so without this the failed attempts would be free.
+-- Definer-only, like the claims.
+create table if not exists public.upload_attempts (
+  id bigint generated always as identity primary key,
+  user_id uuid references auth.users on delete cascade not null,
+  attempted_at timestamptz not null default now()
+);
+alter table public.upload_attempts enable row level security;
+revoke all on table public.upload_attempts from anon, authenticated;
+create index if not exists upload_attempts_user_at
+  on public.upload_attempts (user_id, attempted_at);
+
 -- Signatures changed since the first versions of these; drop before create.
 drop function if exists public.claim_upload(text);
 drop function if exists public.complete_upload(text);
@@ -276,7 +291,9 @@ revoke all on function public.upload_path_has_row(text) from public;
 -- Returns {"state": "claimed", "token": "..."} when the path is now the
 -- caller's to process; {"state": "busy"} when it is in flight or the caller
 -- has too many in flight; {"state": "completed"} when it already has a row;
--- {"state": "missing"} when there is no such object in the caller's folder.
+-- {"state": "missing"} when there is no such object in the caller's folder;
+-- {"state": "limited", "retry_after_seconds": n} when the caller has used
+-- their hourly parsing budget.
 create or replace function public.claim_upload(p_path text)
 returns jsonb
 language plpgsql
@@ -289,6 +306,11 @@ declare
   v_max_inflight int := 3;
   v_existing public.upload_claims%rowtype;
   v_token uuid;
+  v_limits public.ai_limits%rowtype;
+  v_attempt_limit int;
+  v_attempts int;
+  v_oldest timestamptz;
+  v_has_claim boolean := false;
 begin
   if v_user is null then
     raise exception 'not signed in' using errcode = '42501';
@@ -303,9 +325,10 @@ begin
   -- taken against everything this user's other requests have already done.
   perform pg_advisory_xact_lock(hashtext('upload_claims:' || v_user::text));
 
-  -- Sweep: this user's in-flight claims abandoned for over a day, and
-  -- completed claims whose object no longer exists. What remains is one row
-  -- per live object that has been processed or is being processed.
+  -- Sweep: this user's in-flight claims abandoned for over a day, completed
+  -- claims whose object no longer exists, and attempts older than a day. What
+  -- remains is one claim per live object that has been processed or is being
+  -- processed, and an hour's worth of attempts to count.
   delete from public.upload_claims c
    where c.user_id = v_user
      and (
@@ -314,6 +337,8 @@ begin
              select 1 from storage.objects o
               where o.bucket_id = 'rfp-files' and o.name = c.path))
      );
+  delete from public.upload_attempts
+   where user_id = v_user and attempted_at < now() - interval '1 day';
 
   if public.upload_path_has_row(p_path) then
     return jsonb_build_object('state', 'completed');
@@ -329,12 +354,13 @@ begin
   end if;
 
   select * into v_existing from public.upload_claims where path = p_path for update;
-  if found and v_existing.completed_at is not null then
+  v_has_claim := found;
+  if v_has_claim and v_existing.completed_at is not null then
     -- Processed once already; the object is still there but its row may have
     -- been deleted by its owner. It does not get processed again.
     return jsonb_build_object('state', 'completed');
   end if;
-  if found and v_existing.claimed_at > now() - v_stale then
+  if v_has_claim and v_existing.claimed_at > now() - v_stale then
     return jsonb_build_object('state', 'busy');
   end if;
 
@@ -346,7 +372,28 @@ begin
     return jsonb_build_object('state', 'busy');
   end if;
 
-  if found then
+  -- The hourly parsing budget, spent here — before the download, and
+  -- whether or not the parse then succeeds.
+  select * into v_limits from public.ai_limits where id;
+  if not found then
+    raise exception 'claim_upload: public.ai_limits has no row';
+  end if;
+  v_attempt_limit := case when public.is_guest()
+    then v_limits.guest_upload_hourly_limit
+    else v_limits.member_upload_hourly_limit end;
+  select count(*), min(attempted_at) into v_attempts, v_oldest
+    from public.upload_attempts
+   where user_id = v_user and attempted_at >= now() - interval '1 hour';
+  if v_attempts >= v_attempt_limit then
+    return jsonb_build_object(
+      'state', 'limited',
+      'retry_after_seconds',
+      greatest(1, ceil(extract(epoch from (v_oldest + interval '1 hour' - now())))::int)
+    );
+  end if;
+  insert into public.upload_attempts (user_id) values (v_user);
+
+  if v_has_claim then
     -- Abandoned by a killed function: take it over with a fresh token.
     v_token := gen_random_uuid();
     update public.upload_claims
@@ -701,6 +748,14 @@ create table if not exists public.ai_limits (
 insert into public.ai_limits (id) values (true) on conflict (id) do nothing;
 alter table public.ai_limits add column if not exists
   guest_file_limit integer not null default 12;
+-- How many times per rolling hour one account may send a document for
+-- parsing, counted when the attempt is made rather than when it succeeds, so
+-- a request that fails after the parse still spent one. Members generous,
+-- guests in line with their file cap.
+alter table public.ai_limits add column if not exists
+  member_upload_hourly_limit integer not null default 60;
+alter table public.ai_limits add column if not exists
+  guest_upload_hourly_limit integer not null default 12;
 alter table public.ai_limits enable row level security;
 
 -- Which caller are we looking at? Anonymous sign-in stamps `is_anonymous` into
