@@ -97,16 +97,21 @@ function readCentralDirectory(buf: Buffer): Entry[] {
   if (count > MAX_ZIP_ENTRIES) {
     throw new ZipTooLargeError(`${count} entries`);
   }
-  if (cdOffset + cdSize > buf.length) {
-    throw new ZipCorruptError("central directory runs past the end of the file");
+  // The directory has to run exactly up to the end record. JSZip shifts every
+  // offset when it finds bytes between the two, and would then be reading a
+  // different file from the one measured here.
+  if (cdOffset + cdSize !== eocd) {
+    throw new ZipCorruptError("central directory does not end at the end record");
   }
 
+  // Walk by signature to the end of the span, the way JSZip does, rather than
+  // for the declared count: JSZip only warns when the two disagree, so an
+  // entry hidden past an understated count would still be inflated by
+  // mammoth if it were not measured here. Any disagreement is refused.
   const entries: Entry[] = [];
   let pos = cdOffset;
-  for (let n = 0; n < count; n++) {
-    if (pos + 46 > buf.length || buf.readUInt32LE(pos) !== CENTRAL_SIGNATURE) {
-      throw new ZipCorruptError("bad central directory header");
-    }
+  while (pos + 4 <= eocd && buf.readUInt32LE(pos) === CENTRAL_SIGNATURE) {
+    if (pos + 46 > eocd) throw new ZipCorruptError("truncated central directory header");
     const method = buf.readUInt16LE(pos + 10);
     const compressedSize = buf.readUInt32LE(pos + 20);
     const declaredSize = buf.readUInt32LE(pos + 24);
@@ -118,7 +123,18 @@ function readCentralDirectory(buf: Buffer): Entry[] {
       throw new ZipTooLargeError("zip64 entry");
     }
     entries.push({ method, compressedSize, declaredSize, localHeaderOffset });
+    if (entries.length > MAX_ZIP_ENTRIES) {
+      throw new ZipTooLargeError(`more than ${MAX_ZIP_ENTRIES} entries`);
+    }
     pos += 46 + nameLen + extraLen + commentLen;
+  }
+  if (pos !== eocd) {
+    throw new ZipCorruptError("unexpected bytes in the central directory");
+  }
+  if (entries.length !== count) {
+    throw new ZipCorruptError(
+      `end record declares ${count} entries, directory holds ${entries.length}`
+    );
   }
   return entries;
 }
