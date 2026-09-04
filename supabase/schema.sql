@@ -97,6 +97,97 @@ create table if not exists public.comparisons (
 alter table public.comparisons
   add column if not exists interview_focus_areas jsonb;
 
+-- Whether a ranking still describes the field cannot be answered from
+-- `created_at`. Re-ranking upserts this row, which leaves the creation time
+-- alone, and overriding a criterion updates `evaluations` without touching
+-- its creation time either — so a dashboard comparing the two would latch on
+-- "out of date" and never clear. These record when the row last actually
+-- changed, which is the question being asked.
+--
+-- Added without a default so existing rows can be backfilled from
+-- `created_at` rather than all reading as "changed just now"; the default and
+-- the not-null go on afterwards. Re-running this file is a no-op: the not-null
+-- means the backfill matches nothing the second time.
+alter table public.evaluations
+  add column if not exists updated_at timestamptz;
+update public.evaluations set updated_at = coalesce(created_at, now()) where updated_at is null;
+alter table public.evaluations alter column updated_at set default now();
+alter table public.evaluations alter column updated_at set not null;
+
+alter table public.comparisons
+  add column if not exists updated_at timestamptz;
+update public.comparisons set updated_at = coalesce(created_at, now()) where updated_at is null;
+alter table public.comparisons alter column updated_at set default now();
+alter table public.comparisons alter column updated_at set not null;
+
+-- Exactly which evaluations a ranking was built from: `{ response_id:
+-- updated_at }` for every row the compare route read before it called the
+-- model. A ranking is current iff each of those rows is unchanged and none
+-- have been added or removed.
+--
+-- Per row, not a watermark. This row's own `updated_at` is when the ranking
+-- was *saved*, a model call after its inputs were read; and a single "newest
+-- input" timestamp is not safe either, because `now()` is a transaction's
+-- start time, not its commit order — an override that started first and
+-- committed last carries a timestamp older than a watermark taken between the
+-- two. Recording each version read makes no ordering assumption at all.
+--
+-- Deliberately not backfilled. Nothing recorded what an existing ranking
+-- saw, and `evaluations.updated_at` for old rows is itself a backfill from
+-- `created_at`, so a map built now would assert that every pre-migration
+-- override happened before the ranking — the one thing it cannot know. Null
+-- means "does not say", the screens report that as out of date, and one
+-- re-rank records the fact properly. (The rubric stamp on evaluations below
+-- *is* backfilled, on the opposite trade: leaving it unknown would send every
+-- existing owner to re-score every proposal, and a re-rank is one call.)
+alter table public.comparisons
+  drop column if exists evaluations_as_of;
+alter table public.comparisons
+  add column if not exists evaluation_revisions jsonb;
+
+-- Which endpoint actually served each model call, as the host of AI_BASE_URL
+-- at the time (`api.fireworks.ai` for the default). The screens say where an
+-- owner's documents went, and that cannot be read off the model id: the same
+-- `accounts/fireworks/models/...` id routed through a custom gateway ran
+-- somewhere else. Null means "not recorded", and the screens then name the
+-- model and claim nothing about hosting.
+--
+-- Not backfilled: nothing recorded it. If every row in this database was
+-- produced through the default endpoint — true for a deployment that never
+-- set AI_BASE_URL — the statement below records that; run it deliberately.
+--   update public.evaluations set served_by = 'api.fireworks.ai' where served_by is null;
+--   update public.comparisons set served_by = 'api.fireworks.ai' where served_by is null;
+alter table public.evaluations
+  add column if not exists served_by text;
+alter table public.comparisons
+  add column if not exists served_by text;
+
+-- When the rubric's criteria last changed — not when its row was last
+-- written. Accepting a rubric flips `edited_by_user` and rewrites `criteria`
+-- unchanged, and that must not read as a change every score was made
+-- against, so the trigger below fires only when `criteria` actually differ.
+alter table public.rubrics
+  add column if not exists updated_at timestamptz;
+update public.rubrics set updated_at = coalesce(created_at, now()) where updated_at is null;
+alter table public.rubrics alter column updated_at set default now();
+alter table public.rubrics alter column updated_at set not null;
+
+-- Which rubric an evaluation was scored against, as that rubric's
+-- `updated_at`, recorded by the scoring route at the time. A fact rather
+-- than an inference: comparing the evaluation's own update time with the
+-- rubric's would call an evaluation current the moment one criterion was
+-- overridden, though every other score in it still came from the old rubric.
+--
+-- Backfilled from the current rubric, so rows scored before this column
+-- existed read as current. That is the best available answer for them; the
+-- alternative is asking every existing owner to re-score everything.
+alter table public.evaluations
+  add column if not exists rubric_updated_at timestamptz;
+update public.evaluations e
+  set rubric_updated_at = r.updated_at
+  from public.rubrics r
+  where r.rfp_id = e.rfp_id and e.rubric_updated_at is null;
+
 -- ============================================
 -- Audit Log
 -- ============================================
@@ -309,6 +400,25 @@ drop trigger if exists rfps_touch_updated_at on public.rfps;
 create trigger rfps_touch_updated_at
   before update on public.rfps
   for each row execute function public.touch_updated_at();
+
+-- Same function, for the two tables whose freshness the dashboard compares.
+drop trigger if exists evaluations_touch_updated_at on public.evaluations;
+create trigger evaluations_touch_updated_at
+  before update on public.evaluations
+  for each row execute function public.touch_updated_at();
+
+drop trigger if exists comparisons_touch_updated_at on public.comparisons;
+create trigger comparisons_touch_updated_at
+  before update on public.comparisons
+  for each row execute function public.touch_updated_at();
+
+-- Rubrics only when the criteria change: see the column's note above.
+drop trigger if exists rubrics_touch_updated_at on public.rubrics;
+create trigger rubrics_touch_updated_at
+  before update on public.rubrics
+  for each row
+  when (old.criteria is distinct from new.criteria)
+  execute function public.touch_updated_at();
 
 -- ============================================
 -- Storage bucket for RFP and response files

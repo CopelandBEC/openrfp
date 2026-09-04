@@ -1,25 +1,39 @@
 "use client";
 
-import {
-  useEffect,
-  useState,
-  use,
-  useCallback,
-  useMemo,
-} from "react";
+import { useEffect, useState, use, useCallback, useMemo } from "react";
 import Link from "next/link";
+import {
+  ArrowRightIcon,
+  MinusIcon,
+  PlusIcon,
+  QuoteIcon,
+  SlidersHorizontalIcon,
+  TriangleAlertIcon,
+} from "lucide-react";
 import { createClient } from "@/lib/supabase/client";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
-import { Separator } from "@/components/ui/separator";
 import {
-  Card,
-  CardHeader,
-  CardTitle,
-  CardContent,
-} from "@/components/ui/card";
+  Accordion,
+  AccordionItem,
+  AccordionPanel,
+  AccordionTrigger,
+} from "@/components/ui/accordion";
+import {
+  Collapsible,
+  CollapsiblePanel,
+  CollapsibleTrigger,
+} from "@/components/ui/collapsible";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
+import { AppHeader, PageIntro } from "@/components/app-shell";
+import { EmptyState, ErrorState, WorkingState } from "@/components/stage-state";
+import { ScoreMeter } from "@/components/viz/score-meter";
+import { ScoreBar } from "@/components/viz/score-bar";
+import { TierChip } from "@/components/viz/tier-chip";
+import { formatScore, scoreTier, toPercent } from "@/lib/score";
+import { scoredAgainstCurrentRubric } from "@/lib/stage";
+import { describeModel } from "@/lib/ai/model-label";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -52,6 +66,8 @@ interface Rubric {
   edited_by_user: boolean;
   locked: boolean;
   created_at: string;
+  /** When the criteria last changed. */
+  updated_at?: string | null;
 }
 
 interface Evaluation {
@@ -64,8 +80,14 @@ interface Evaluation {
   strengths: string[];
   weaknesses: string[];
   model_used: string | null;
+  /** Host the scoring call went to; null before it was recorded. */
+  served_by?: string | null;
   prompt_version: string | null;
   created_at: string;
+  /** Last written: a re-score or an override. Re-scoring upserts the row. */
+  updated_at?: string | null;
+  /** The rubric these scores were made against; see lib/stage.ts. */
+  rubric_updated_at?: string | null;
 }
 
 interface VendorResponse {
@@ -109,18 +131,141 @@ function recalculateOverallScore(
 }
 
 // ---------------------------------------------------------------------------
-// Criterion Card
+// Clamped prose
 // ---------------------------------------------------------------------------
 
-function CriterionCard({
+/**
+ * A paragraph that shows its opening and hides the rest.
+ *
+ * The model's summaries run long. Three lines is enough to know whether the
+ * rest is worth reading, which is the whole point of a summary — and the full
+ * text is one press away, never lost.
+ */
+function ClampText({ text, lines = 3 }: { text: string; lines?: number }) {
+  const [open, setOpen] = useState(false);
+  // Roughly the point at which clamping actually hides something; below it the
+  // toggle would be a control that does nothing.
+  const clampable = text.length > 220;
+
+  const clamped = clampable && !open;
+
+  return (
+    <div>
+      {/* The clamp is an inline style rather than a utility class because the
+          line count is a prop, and Tailwind only emits classes it can see. */}
+      <p
+        className="text-sm leading-relaxed text-foreground"
+        style={
+          clamped
+            ? {
+                display: "-webkit-box",
+                WebkitLineClamp: lines,
+                WebkitBoxOrient: "vertical",
+                overflow: "hidden",
+              }
+            : undefined
+        }
+      >
+        {text}
+      </p>
+      {clampable && (
+        <button
+          type="button"
+          onClick={() => setOpen((v) => !v)}
+          className="mt-1.5 text-xs font-medium text-primary underline-offset-4 hover:underline"
+        >
+          {open ? "Show less" : "Read the full summary"}
+        </button>
+      )}
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Strengths / weaknesses
+// ---------------------------------------------------------------------------
+
+/**
+ * A findings list, showing the first few and folding the tail away.
+ *
+ * The model routinely returns six or eight of each, and eight bullets under
+ * "Weaknesses" reads as noise rather than as eight findings. The first three
+ * are the ones a reader acts on.
+ */
+function FindingList({
+  items,
+  tone,
+  label,
+  limit = 3,
+}: {
+  items: string[];
+  tone: "good" | "critical";
+  label: string;
+  limit?: number;
+}) {
+  if (!items?.length) return null;
+  const visible = items.slice(0, limit);
+  const rest = items.slice(limit);
+  const Icon = tone === "good" ? PlusIcon : MinusIcon;
+  const dot =
+    tone === "good" ? "var(--status-good)" : "var(--status-critical)";
+
+  const row = (text: string, index: number) => (
+    <li key={index} className="flex gap-2">
+      <Icon
+        className="mt-0.5 size-3.5 shrink-0"
+        style={{ color: dot }}
+        aria-hidden="true"
+      />
+      <span className="text-sm leading-snug text-foreground">{text}</span>
+    </li>
+  );
+
+  return (
+    <div>
+      <h3 className="text-xs font-semibold tracking-wide text-muted-foreground uppercase">
+        {label}
+      </h3>
+      <ul className="mt-2 space-y-1.5">{visible.map(row)}</ul>
+      {rest.length > 0 && (
+        <Collapsible className="mt-2">
+          <CollapsibleTrigger>
+            {rest.length} more
+          </CollapsibleTrigger>
+          <CollapsiblePanel>
+            <ul className="space-y-1.5 pt-1.5">
+              {rest.map((text, i) => row(text, i + limit))}
+            </ul>
+          </CollapsiblePanel>
+        </Collapsible>
+      )}
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Criterion row
+// ---------------------------------------------------------------------------
+
+/**
+ * One criterion, collapsed to a score and a bar.
+ *
+ * Everything that used to be on screen at once — the description, the
+ * reasoning, the quoted evidence, the override form — is still here, behind
+ * the row. Eight criteria across four vendors was previously about two
+ * thousand words of prose with no way to skim it.
+ */
+function CriterionRow({
   criterion,
   scoreEntry,
   evaluationId,
+  index,
   onOverride,
 }: {
   criterion: RubricCriterion;
   scoreEntry: ScoreEntry;
   evaluationId: string;
+  index: number;
   onOverride: (
     evaluationId: string,
     criterionId: string,
@@ -133,6 +278,9 @@ function CriterionCard({
   );
   const [saving, setSaving] = useState(false);
   const [overrideError, setOverrideError] = useState("");
+
+  const percent = toPercent(scoreEntry.score, scoreEntry.max);
+  const tier = scoreTier(percent);
 
   const handleSave = useCallback(async () => {
     const parsed = parseFloat(overrideValue);
@@ -155,102 +303,126 @@ function CriterionCard({
   }, [overrideValue, scoreEntry.max, criterion.id, evaluationId, onOverride]);
 
   return (
-    <Card className="border-border">
-      <CardHeader>
-        <div className="flex items-start justify-between gap-4">
-          <div className="space-y-1">
-            <CardTitle className="text-base font-semibold text-primary">
+    <AccordionItem
+      value={criterion.id}
+      className="animate-reveal"
+      style={{ ["--reveal-i" as string]: index }}
+    >
+      <AccordionTrigger>
+        <span className="min-w-0 flex-1">
+          <span className="flex items-center gap-2">
+            <span className="truncate text-sm font-medium text-foreground">
               {criterion.name}
-            </CardTitle>
-            {criterion.description && (
-              <p className="text-sm text-muted-foreground">
-                {criterion.description}
-              </p>
-            )}
-          </div>
-          <div className="flex items-center gap-2">
-            <Badge className="bg-primary text-primary-foreground">
-              {scoreEntry.score}/{scoreEntry.max}
-            </Badge>
+            </span>
             {scoreEntry.overridden && (
-              <Badge variant="secondary">Overridden</Badge>
+              <Badge variant="secondary" className="shrink-0">
+                Yours
+              </Badge>
+            )}
+          </span>
+          <span className="mt-1.5 flex items-center gap-2">
+            <ScoreBar
+              percent={percent}
+              index={index}
+              thickness="thin"
+              className="max-w-40"
+            />
+            <span className="shrink-0 text-xs font-semibold tabular-nums text-foreground">
+              {formatScore(scoreEntry.score)}
+              <span className="font-normal text-muted-foreground">
+                /{scoreEntry.max}
+              </span>
+            </span>
+          </span>
+        </span>
+        <TierChip tier={tier} size="sm" className="shrink-0" />
+      </AccordionTrigger>
+
+      <AccordionPanel>
+        <div className="space-y-4">
+          {criterion.description && (
+            <p className="text-xs text-muted-foreground">
+              {criterion.description}
+            </p>
+          )}
+
+          <div>
+            <h4 className="text-xs font-semibold tracking-wide text-muted-foreground uppercase">
+              Why this score
+            </h4>
+            <p className="mt-1.5 text-sm leading-relaxed text-foreground">
+              {scoreEntry.rationale}
+            </p>
+          </div>
+
+          {scoreEntry.evidence_quote && (
+            <figure className="rounded-lg bg-muted/60 p-3">
+              <QuoteIcon
+                className="size-3.5 text-primary"
+                aria-hidden="true"
+              />
+              <blockquote className="mt-1.5 text-sm leading-relaxed text-foreground italic">
+                {scoreEntry.evidence_quote}
+              </blockquote>
+              {scoreEntry.page_ref && (
+                <figcaption className="mt-2 text-xs text-muted-foreground">
+                  Page {scoreEntry.page_ref} of the proposal
+                </figcaption>
+              )}
+            </figure>
+          )}
+
+          <div className="flex flex-wrap items-center gap-3">
+            {!overriding ? (
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => {
+                  setOverrideValue(String(scoreEntry.score));
+                  setOverriding(true);
+                }}
+              >
+                <SlidersHorizontalIcon aria-hidden="true" />
+                Change this score
+              </Button>
+            ) : (
+              <div className="flex flex-wrap items-center gap-2">
+                <Input
+                  type="number"
+                  min={0}
+                  max={scoreEntry.max}
+                  step="0.5"
+                  value={overrideValue}
+                  onChange={(e) => setOverrideValue(e.target.value)}
+                  className="w-20"
+                  aria-label={`Override score for ${criterion.name}`}
+                />
+                <span className="text-xs text-muted-foreground">
+                  / {scoreEntry.max}
+                </span>
+                <Button size="sm" onClick={handleSave} disabled={saving}>
+                  {saving ? "Saving…" : "Save"}
+                </Button>
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  onClick={() => {
+                    setOverriding(false);
+                    setOverrideError("");
+                  }}
+                  disabled={saving}
+                >
+                  Cancel
+                </Button>
+              </div>
+            )}
+            {overrideError && (
+              <p className="text-xs text-destructive">{overrideError}</p>
             )}
           </div>
         </div>
-      </CardHeader>
-      <CardContent className="space-y-4">
-        {/* Rationale */}
-        <div>
-          <h4 className="text-sm font-semibold text-foreground">Rationale</h4>
-          <p className="mt-1 text-sm text-muted-foreground">
-            {scoreEntry.rationale}
-          </p>
-        </div>
-
-        {/* Evidence quote */}
-        {scoreEntry.evidence_quote && (
-          <blockquote className="border-l-4 border-primary/30 bg-muted/50 rounded-r-md p-3 text-sm italic text-foreground">
-            &ldquo;{scoreEntry.evidence_quote}&rdquo;
-            {scoreEntry.page_ref && (
-              <span className="mt-1 block text-xs not-italic text-muted-foreground">
-                Page {scoreEntry.page_ref}
-              </span>
-            )}
-          </blockquote>
-        )}
-
-        <Separator />
-
-        {/* Override controls */}
-        <div className="flex items-center gap-3">
-          {!overriding ? (
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={() => {
-                setOverrideValue(String(scoreEntry.score));
-                setOverriding(true);
-              }}
-            >
-              Override Score
-            </Button>
-          ) : (
-            <div className="flex items-center gap-2">
-              <Input
-                type="number"
-                min={0}
-                max={scoreEntry.max}
-                step="0.5"
-                value={overrideValue}
-                onChange={(e) => setOverrideValue(e.target.value)}
-                className="w-24"
-                aria-label={`Override score for ${criterion.name}`}
-              />
-              <span className="text-xs text-muted-foreground">
-                / {scoreEntry.max}
-              </span>
-              <Button size="sm" onClick={handleSave} disabled={saving}>
-                {saving ? "Saving..." : "Save"}
-              </Button>
-              <Button
-                size="sm"
-                variant="ghost"
-                onClick={() => {
-                  setOverriding(false);
-                  setOverrideError("");
-                }}
-                disabled={saving}
-              >
-                Cancel
-              </Button>
-            </div>
-          )}
-          {overrideError && (
-            <p className="text-xs text-destructive">{overrideError}</p>
-          )}
-        </div>
-      </CardContent>
-    </Card>
+      </AccordionPanel>
+    </AccordionItem>
   );
 }
 
@@ -284,7 +456,7 @@ export default function EvaluationsPage({
         supabase
           .from("evaluations")
           .select(
-            "id, response_id, rfp_id, scores, overall_score, summary, strengths, weaknesses, model_used, prompt_version, created_at"
+            "id, response_id, rfp_id, scores, overall_score, summary, strengths, weaknesses, model_used, served_by, prompt_version, created_at, updated_at, rubric_updated_at"
           )
           .eq("rfp_id", id)
           .order("created_at", { ascending: true }),
@@ -296,7 +468,7 @@ export default function EvaluationsPage({
         supabase
           .from("rubrics")
           .select(
-            "id, rfp_id, criteria, ai_generated, edited_by_user, locked, created_at"
+            "id, rfp_id, criteria, ai_generated, edited_by_user, locked, created_at, updated_at"
           )
           .eq("rfp_id", id)
           .order("created_at", { ascending: false })
@@ -406,8 +578,43 @@ export default function EvaluationsPage({
     [responses]
   );
 
+  // Memoised because `weakSpotsFor` closes over it: a fresh [] each render
+  // would rebuild that callback on every keystroke in an override field.
+  const criteria = useMemo(() => rubric?.criteria ?? [], [rubric]);
+
+  /**
+   * Vendors whose scores were made against an earlier rubric. Those scores
+   * and the quotes behind them describe criteria that may no longer exist,
+   * so the page says so before showing them.
+   */
+  const scoredAgainstOldRubric = useMemo(() => {
+    const nameFor = new Map(responses.map((r) => [r.id, r.vendor_name]));
+    return evaluations
+      .filter(
+        (ev) =>
+          !scoredAgainstCurrentRubric(ev.rubric_updated_at, rubric?.updated_at)
+      )
+      .map((ev) => nameFor.get(ev.response_id) ?? "Unknown vendor");
+  }, [evaluations, responses, rubric]);
   const hasEvaluations = evaluations.length > 0;
   const showCompareButton = evaluations.length >= 2;
+
+  /**
+   * The criteria where a proposal is thin, per evaluation.
+   *
+   * This is the answer to the question a reader opens the page with — "where
+   * is the risk?" — and it was previously only reachable by reading every
+   * criterion's prose in turn.
+   */
+  const weakSpotsFor = useCallback(
+    (evaluation: Evaluation) =>
+      criteria.filter((c) => {
+        const entry = evaluation.scores?.[c.id];
+        if (!entry) return false;
+        return scoreTier(toPercent(entry.score, entry.max)) === "weak";
+      }),
+    [criteria]
+  );
 
   // -------------------------------------------------------------------------
   // Render
@@ -415,208 +622,256 @@ export default function EvaluationsPage({
 
   return (
     <div className="min-h-screen bg-background">
-      {/* Header */}
-      <header className="border-b border-border">
-        <div className="container mx-auto flex h-16 items-center justify-between px-4">
-          <Link
-            href="/dashboard"
-            className="text-lg font-bold tracking-tight text-primary"
+      <AppHeader rfpId={id} current="evaluations" />
+
+      <main className="container mx-auto max-w-4xl px-4 py-10">
+        {loading ? (
+          <WorkingState
+            title="Loading evaluations"
+            notes={["Fetching the scores and the evidence behind them."]}
+          />
+        ) : error && !hasEvaluations ? (
+          <ErrorState message={error} />
+        ) : !hasEvaluations ? (
+          <EmptyState
+            title="Nothing scored yet"
+            action={
+              <Button render={<Link href={`/rfp/${id}/responses`} />}>
+                Go to proposals
+              </Button>
+            }
           >
-            OpenRFP
-          </Link>
-          <div className="flex items-center gap-6">
-            <Link
-              href={`/rfp/${id}/responses`}
-              className="text-sm text-muted-foreground hover:text-foreground"
+            Upload the vendor proposals and run the evaluation — the scores and
+            the quotes behind them land here.
+          </EmptyState>
+        ) : (
+          <>
+            <PageIntro eyebrow="Step 3 of 4" title="How each proposal scored">
+              Every score cites the passage it came from, and you can change any
+              of them.
+            </PageIntro>
+
+            {error && (
+              <div className="mt-6">
+                <ErrorState message={error} />
+              </div>
+            )}
+
+            {scoredAgainstOldRubric.length > 0 && (
+              <div
+                role="note"
+                className="mt-6 flex flex-wrap items-center justify-between gap-3 rounded-lg bg-muted px-4 py-3"
+              >
+                <p className="flex items-start gap-2 text-sm text-foreground">
+                  <TriangleAlertIcon
+                    className="mt-0.5 size-4 shrink-0"
+                    style={{ color: "var(--status-warning)" }}
+                    aria-hidden="true"
+                  />
+                  <span>
+                    <span className="font-medium">
+                      The rubric changed after scoring.
+                    </span>{" "}
+                    {scoredAgainstOldRubric.join(", ")}{" "}
+                    {scoredAgainstOldRubric.length === 1 ? "was" : "were"} scored
+                    against earlier criteria, so the scores and quotes below may
+                    not line up with the rubric as it is now.
+                  </span>
+                </p>
+                <Button
+                  size="sm"
+                  render={<Link href={`/rfp/${id}/responses`} />}
+                >
+                  Re-score proposals
+                </Button>
+              </div>
+            )}
+
+            <Tabs
+              defaultValue={evaluations[0]?.id ?? ""}
+              className="mt-8 w-full"
             >
-              &larr; Responses
-            </Link>
-            <Link
-              href="/dashboard"
-              className="text-sm text-muted-foreground hover:text-foreground"
-            >
-              &larr; Back to dashboard
-            </Link>
-          </div>
-        </div>
-      </header>
-
-      <main className="container mx-auto max-w-4xl px-4 py-12">
-        <h1 className="text-2xl font-bold tracking-tight text-primary">
-          Evaluations
-        </h1>
-        <p className="mt-2 text-sm text-muted-foreground">
-          Per-response evaluations with scores and cited evidence.
-        </p>
-
-        {error && (
-          <div className="mt-4 rounded-md bg-destructive/10 p-3 text-sm text-destructive">
-            {error}
-          </div>
-        )}
-
-        {/* Loading state */}
-        {loading && (
-          <div className="mt-12 flex flex-col items-center justify-center gap-3">
-            <div className="h-8 w-8 animate-spin rounded-full border-2 border-primary border-t-transparent" />
-            <p className="text-sm text-muted-foreground">
-              Loading evaluations...
-            </p>
-          </div>
-        )}
-
-        {/* Empty state */}
-        {!loading && !hasEvaluations && (
-          <div className="mt-8 rounded-lg border border-dashed border-border bg-muted p-12 text-center">
-            <p className="text-sm text-muted-foreground">
-              No evaluations yet. Go back and evaluate your responses first.
-            </p>
-            <Link
-              href={`/rfp/${id}/responses`}
-              className="mt-4 inline-flex h-10 items-center justify-center rounded-md bg-primary px-6 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90"
-            >
-              &larr; Go to Responses
-            </Link>
-          </div>
-        )}
-
-        {/* Evaluations */}
-        {!loading && hasEvaluations && (
-          <div className="mt-8 space-y-6">
-            <Tabs defaultValue={evaluations[0]?.id ?? ""} className="w-full">
-              <TabsList className="flex w-full flex-wrap">
+              {/* Each tab carries its own score, so the comparison starts in
+                  the tab bar rather than requiring four clicks. */}
+              <TabsList className="flex h-auto w-full flex-wrap gap-1 p-1">
                 {evaluations.map((evaluation) => (
                   <TabsTrigger
                     key={evaluation.id}
                     value={evaluation.id}
-                    className="flex-1"
+                    className="h-auto flex-1 flex-col items-start gap-0.5 px-2.5 py-1.5"
                   >
-                    {vendorNameFor(evaluation.response_id)}
+                    <span className="max-w-full truncate text-xs font-medium">
+                      {vendorNameFor(evaluation.response_id)}
+                    </span>
+                    <span className="text-sm font-semibold tabular-nums">
+                      {formatScore(evaluation.overall_score)}
+                    </span>
                   </TabsTrigger>
                 ))}
               </TabsList>
 
               {evaluations.map((evaluation) => {
                 const vendorName = vendorNameFor(evaluation.response_id);
+                const weakSpots = weakSpotsFor(evaluation);
+
                 return (
                   <TabsContent
                     key={evaluation.id}
                     value={evaluation.id}
                     className="mt-6 space-y-6"
                   >
-                    {/* Vendor header + overall score */}
-                    <div className="flex items-start justify-between gap-4 rounded-lg bg-muted p-6">
-                      <div className="space-y-1">
-                        <h2 className="text-xl font-bold text-foreground">
-                          {vendorName}
-                        </h2>
-                        {evaluation.summary && (
-                          <p className="max-w-2xl text-sm text-muted-foreground">
-                            {evaluation.summary}
-                          </p>
-                        )}
-                      </div>
-                      <div className="text-right">
-                        <div className="text-3xl font-bold text-primary">
-                          {evaluation.overall_score != null
-                            ? Number(evaluation.overall_score).toFixed(1)
-                            : "—"}
+                    {/* ----------------------------------------------------
+                     * The verdict
+                     *
+                     * Score, summary and where the risk is, above the fold
+                     * and in that order. Everything else on the page is
+                     * supporting detail for this card.
+                     * ------------------------------------------------- */}
+                    <section className="animate-reveal rounded-xl bg-card p-6 ring-1 ring-foreground/10">
+                      <div className="flex flex-wrap items-start justify-between gap-6">
+                        <div className="min-w-0">
+                          <h2 className="text-xl font-bold text-foreground">
+                            {vendorName}
+                          </h2>
+                          {evaluation.summary && (
+                            <div className="mt-2 max-w-xl">
+                              <ClampText text={evaluation.summary} />
+                            </div>
+                          )}
                         </div>
-                        <div className="text-xs text-muted-foreground">
-                          Overall Score
-                        </div>
+                        <ScoreMeter
+                          value={evaluation.overall_score}
+                          label="Weighted across all criteria"
+                          className="w-52 shrink-0"
+                        />
                       </div>
-                    </div>
 
-                    <Separator />
-
-                    {/* Criterion breakdown */}
-                    <div className="space-y-4">
-                      <h3 className="text-lg font-semibold text-primary">
-                        Criterion Breakdown
-                      </h3>
-                      {rubric && rubric.criteria.length > 0 ? (
-                        rubric.criteria.map((criterion) => {
-                          const scoreEntry = evaluation.scores[criterion.id];
-                          if (!scoreEntry) return null;
-                          return (
-                            <CriterionCard
-                              key={criterion.id}
-                              criterion={criterion}
-                              scoreEntry={scoreEntry}
-                              evaluationId={evaluation.id}
-                              onOverride={handleOverride}
-                            />
-                          );
-                        })
-                      ) : (
-                        <p className="text-sm text-muted-foreground">
-                          No rubric criteria found. Define a rubric to see
-                          criterion breakdowns.
+                      {weakSpots.length > 0 && (
+                        <p className="mt-5 border-t border-border/60 pt-4 text-sm text-foreground">
+                          <span className="font-medium">Watch out:</span>{" "}
+                          thin on{" "}
+                          {weakSpots.map((c, i) => (
+                            <span key={c.id}>
+                              {i > 0 && (i === weakSpots.length - 1 ? " and " : ", ")}
+                              <span className="font-medium">{c.name}</span>
+                            </span>
+                          ))}
+                          .
                         </p>
                       )}
-                    </div>
+                    </section>
 
-                    <Separator />
+                    {/* Strengths and weaknesses, side by side and folded. */}
+                    {((evaluation.strengths?.length ?? 0) > 0 ||
+                      (evaluation.weaknesses?.length ?? 0) > 0) && (
+                      <section className="grid gap-6 sm:grid-cols-2">
+                        <FindingList
+                          items={evaluation.strengths ?? []}
+                          tone="good"
+                          label="Strengths"
+                        />
+                        <FindingList
+                          items={evaluation.weaknesses ?? []}
+                          tone="critical"
+                          label="Weaknesses"
+                        />
+                      </section>
+                    )}
 
-                    {/* Strengths */}
-                    {evaluation.strengths &&
-                      evaluation.strengths.length > 0 && (
-                        <div className="space-y-2">
-                          <h3 className="text-lg font-semibold text-primary">
-                            Strengths
-                          </h3>
-                          <ul className="list-disc space-y-1 pl-6 text-sm text-foreground">
-                            {evaluation.strengths.map((strength, idx) => (
-                              <li key={idx}>{strength}</li>
-                            ))}
-                          </ul>
-                        </div>
+                    {/* Criterion by criterion. */}
+                    <section>
+                      <h3 className="text-sm font-semibold text-foreground">
+                        Criterion by criterion
+                      </h3>
+                      {criteria.length > 0 ? (
+                        <Accordion className="mt-3 gap-2.5">
+                          {criteria.map((criterion, index) => {
+                            const scoreEntry = evaluation.scores[criterion.id];
+                            if (!scoreEntry) return null;
+                            return (
+                              <CriterionRow
+                                key={criterion.id}
+                                criterion={criterion}
+                                scoreEntry={scoreEntry}
+                                evaluationId={evaluation.id}
+                                index={index}
+                                onOverride={handleOverride}
+                              />
+                            );
+                          })}
+                        </Accordion>
+                      ) : (
+                        <p className="mt-2 text-sm text-muted-foreground">
+                          No rubric criteria found, so there is nothing to break
+                          the score down against.
+                        </p>
                       )}
+                    </section>
 
-                    {/* Weaknesses */}
-                    {evaluation.weaknesses &&
-                      evaluation.weaknesses.length > 0 && (
-                        <div className="space-y-2">
-                          <h3 className="text-lg font-semibold text-primary">
-                            Weaknesses
-                          </h3>
-                          <ul className="list-disc space-y-1 pl-6 text-sm text-foreground">
-                            {evaluation.weaknesses.map((weakness, idx) => (
-                              <li key={idx}>{weakness}</li>
-                            ))}
-                          </ul>
-                        </div>
-                      )}
-
-                    <Separator />
-
-                    {/* Model transparency */}
+                    {/* Provenance, available but not in the way. */}
                     {evaluation.model_used && (
-                      <p className="text-xs text-muted-foreground">
-                        Model used: {evaluation.model_used}
-                        {evaluation.prompt_version
-                          ? ` · Prompt v${evaluation.prompt_version}`
-                          : ""}
-                      </p>
+                      <Collapsible>
+                        <CollapsibleTrigger>
+                          How this was produced
+                        </CollapsibleTrigger>
+                        <CollapsiblePanel>
+                          <dl className="grid grid-cols-[auto_1fr] gap-x-4 gap-y-1 pt-2 text-xs text-muted-foreground">
+                            <dt>Model</dt>
+                            <dd className="text-foreground">
+                              {describeModel(evaluation.model_used, evaluation.served_by).name}
+                            </dd>
+                            {describeModel(evaluation.model_used, evaluation.served_by).provenance && (
+                              <>
+                                <dt>Where it ran</dt>
+                                <dd className="text-foreground">
+                                  {describeModel(evaluation.model_used, evaluation.served_by).provenance}
+                                </dd>
+                              </>
+                            )}
+                            {evaluation.prompt_version && (
+                              <>
+                                <dt>Prompt</dt>
+                                <dd className="text-foreground">
+                                  v{evaluation.prompt_version}
+                                </dd>
+                              </>
+                            )}
+                            {/* Re-scoring upserts the row, so `created_at`
+                                is the first score's time for ever; the update
+                                time is when these numbers were last written,
+                                by the model or by hand. */}
+                            <dt>Last scored or edited</dt>
+                            <dd className="text-foreground">
+                              {new Date(
+                                evaluation.updated_at ?? evaluation.created_at
+                              ).toLocaleString()}
+                            </dd>
+                          </dl>
+                        </CollapsiblePanel>
+                      </Collapsible>
                     )}
                   </TabsContent>
                 );
               })}
             </Tabs>
 
-            {/* Compare button */}
             {showCompareButton && (
-              <div className="flex justify-center pt-4">
-                <Link
-                  href={`/rfp/${id}/comparison`}
-                  className="inline-flex h-11 items-center justify-center rounded-md bg-primary px-8 py-2 text-base font-medium text-primary-foreground shadow-sm transition-colors hover:bg-primary/90"
-                >
-                  Compare All Responses &rarr;
-                </Link>
+              <div className="sticky bottom-0 -mx-4 mt-10 border-t border-border/70 bg-background/90 px-4 py-3 backdrop-blur-sm">
+                <div className="flex items-center justify-between gap-4">
+                  <p className="text-xs text-muted-foreground">
+                    {evaluations.length} proposals scored.
+                  </p>
+                  <Button
+                    render={<Link href={`/rfp/${id}/comparison`} />}
+                    size="lg"
+                  >
+                    See the decision
+                    <ArrowRightIcon aria-hidden="true" />
+                  </Button>
+                </div>
               </div>
             )}
-          </div>
+          </>
         )}
       </main>
     </div>

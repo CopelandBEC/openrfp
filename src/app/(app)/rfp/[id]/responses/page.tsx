@@ -2,16 +2,22 @@
 
 import { useEffect, useState, use, useCallback, useMemo } from "react";
 import { useRouter } from "next/navigation";
+import {
+  ArrowRightIcon,
+  FileTextIcon,
+  ScanTextIcon,
+  Trash2Icon,
+  TriangleAlertIcon,
+  UploadIcon,
+} from "lucide-react";
 import { createClient } from "@/lib/supabase/client";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { Badge } from "@/components/ui/badge";
-import { Separator } from "@/components/ui/separator";
-import {
-  Card,
-  CardContent,
-} from "@/components/ui/card";
+import { AppHeader, PageIntro } from "@/components/app-shell";
+import { EmptyState, ErrorState } from "@/components/stage-state";
+import { scoredAgainstCurrentRubric } from "@/lib/stage";
+import { cn } from "@/lib/utils";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -37,6 +43,16 @@ const MAX_FILE_SIZE = 25 * 1024 * 1024; // 25MB
 const ALLOWED_EXTENSIONS = [".pdf"];
 const ALLOWED_MIME_TYPES = ["application/pdf"];
 
+/**
+ * How many proposals to evaluate at once.
+ *
+ * Each evaluation is an independent model call, so they need not be serialised.
+ * Three is a compromise: it collapses most of the wait for a typical RFP while
+ * leaving the hourly AI quota — reserved per call, server side — recognisable
+ * to the owner who clicks the button once.
+ */
+const EVALUATION_CONCURRENCY = 3;
+
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
@@ -52,36 +68,40 @@ function validateFile(file: File): string | null {
   return null;
 }
 
-function statusBadge(status: Response["status"]) {
-  switch (status) {
-    case "pending":
-      return <Badge variant="secondary">Pending</Badge>;
-    case "evaluating":
-      return <Badge variant="default">Evaluating</Badge>;
-    case "evaluated":
-      return (
-        <Badge className="bg-primary text-primary-foreground">Evaluated</Badge>
-      );
-    case "error":
-      return <Badge variant="destructive">Error</Badge>;
-    default:
-      return <Badge variant="secondary">{status}</Badge>;
-  }
-}
+/**
+ * A proposal's state, as a dot and a word.
+ *
+ * This replaced two separate badges — one for the upload status, one for OCR —
+ * which between them put up to four chips on a row whose only real news was
+ * "not scored yet". The dot carries the state at a glance and the word carries
+ * it properly; the OCR problem is the only one worth its own line, and it gets
+ * one below.
+ */
+const STATUS = {
+  pending: { label: "Not scored", tone: "var(--muted-foreground)" },
+  evaluating: { label: "Scoring…", tone: "var(--status-warning)" },
+  evaluated: { label: "Scored", tone: "var(--status-good)" },
+  error: { label: "Failed", tone: "var(--status-critical)" },
+} as const;
 
-function ocrBadge(ocrStatus: Response["ocr_status"]) {
-  switch (ocrStatus) {
-    case "ok":
-      return <Badge className="bg-primary/10 text-primary">OCR OK</Badge>;
-    case "flagged":
-      return (
-        <Badge className="bg-yellow-100 text-yellow-800">OCR Flagged</Badge>
-      );
-    case "unknown":
-      return <Badge variant="secondary">OCR Unknown</Badge>;
-    default:
-      return <Badge variant="secondary">{ocrStatus}</Badge>;
-  }
+function StatusDot({ status }: { status: Response["status"] }) {
+  const meta = STATUS[status] ?? {
+    label: status,
+    tone: "var(--muted-foreground)",
+  };
+  return (
+    <span className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
+      <span
+        className={cn(
+          "size-2 shrink-0 rounded-full",
+          status === "evaluating" && "animate-pulse"
+        )}
+        style={{ backgroundColor: meta.tone }}
+        aria-hidden="true"
+      />
+      {meta.label}
+    </span>
+  );
 }
 
 // ---------------------------------------------------------------------------
@@ -106,6 +126,16 @@ export default function ResponsesPage({
   const [evaluating, setEvaluating] = useState(false);
   const [evalProgress, setEvalProgress] = useState("");
   const [error, setError] = useState("");
+  const [dragActive, setDragActive] = useState(false);
+  /**
+   * Which rubric each existing score was made against, by response id, and
+   * when the rubric's criteria last changed. Together they say whether a
+   * scored proposal is actually scored against the rubric as it is now.
+   */
+  const [scoredAgainst, setScoredAgainst] = useState<
+    Map<string, string | null>
+  >(new Map());
+  const [rubricUpdatedAt, setRubricUpdatedAt] = useState<string | null>(null);
 
   // -----------------------------------------------------------------------
   // Data fetching
@@ -116,21 +146,49 @@ export default function ResponsesPage({
   // `error` already mount in the right state.
   const fetchResponses = useCallback(async () => {
     try {
-      const { data, error: queryError } = await supabase
-        .from("responses")
-        .select(
-          "id, rfp_id, vendor_name, file_path, extracted_text, ocr_status, page_count, status, created_at"
+      const [responsesRes, evaluationsRes, rubricRes] = await Promise.all([
+        supabase
+          .from("responses")
+          .select(
+            "id, rfp_id, vendor_name, file_path, extracted_text, ocr_status, page_count, status, created_at"
+          )
+          .eq("rfp_id", id)
+          .order("created_at", { ascending: true }),
+        // A rubric edited after scoring has to show up here as scoring left
+        // to do, not as "every proposal is scored" — `responses.status`
+        // cannot tell the two apart.
+        supabase
+          .from("evaluations")
+          .select("response_id, rubric_updated_at")
+          .eq("rfp_id", id),
+        supabase
+          .from("rubrics")
+          .select("updated_at")
+          .eq("rfp_id", id)
+          .maybeSingle(),
+      ]);
+
+      if (responsesRes.error) throw new Error(responsesRes.error.message);
+      if (evaluationsRes.error) throw new Error(evaluationsRes.error.message);
+      if (rubricRes.error) throw new Error(rubricRes.error.message);
+
+      if (responsesRes.data) {
+        setResponses(responsesRes.data as Response[]);
+      }
+      setScoredAgainst(
+        new Map(
+          (
+            (evaluationsRes.data ?? []) as {
+              response_id: string;
+              rubric_updated_at: string | null;
+            }[]
+          ).map((ev) => [ev.response_id, ev.rubric_updated_at])
         )
-        .eq("rfp_id", id)
-        .order("created_at", { ascending: true });
-
-      if (queryError) {
-        throw new Error(queryError.message);
-      }
-
-      if (data) {
-        setResponses(data as Response[]);
-      }
+      );
+      setRubricUpdatedAt(
+        (rubricRes.data as { updated_at?: string | null } | null)?.updated_at ??
+          null
+      );
       setError("");
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to load responses");
@@ -280,16 +338,31 @@ export default function ResponsesPage({
   // Evaluate All
   // -----------------------------------------------------------------------
 
+  /**
+   * Scored, but against a rubric that has changed since. The scores describe
+   * criteria and weights that no longer exist, so the proposal goes back in
+   * the queue as if it had never been scored.
+   */
+  const staleAgainstRubric = useCallback(
+    (r: Response) =>
+      r.status === "evaluated" &&
+      scoredAgainst.has(r.id) &&
+      !scoredAgainstCurrentRubric(scoredAgainst.get(r.id), rubricUpdatedAt),
+    [scoredAgainst, rubricUpdatedAt]
+  );
+
   const pendingOrErrorResponses = responses.filter(
     (r) => r.status === "pending" || r.status === "error"
   );
+  const needsRescoring = responses.filter(staleAgainstRubric);
+  const toScore = [...pendingOrErrorResponses, ...needsRescoring];
 
   const allEvaluated =
     responses.length > 0 &&
-    responses.every((r) => r.status === "evaluated");
+    responses.every((r) => r.status === "evaluated") &&
+    needsRescoring.length === 0;
 
-  const canEvaluate =
-    responses.length > 0 && pendingOrErrorResponses.length > 0 && !evaluating;
+  const canEvaluate = responses.length > 0 && toScore.length > 0 && !evaluating;
 
   const handleEvaluateAll = useCallback(async () => {
     if (!canEvaluate) return;
@@ -297,18 +370,19 @@ export default function ResponsesPage({
     setError("");
 
     const toEvaluate = responses.filter(
-      (r) => r.status === "pending" || r.status === "error"
+      (r) =>
+        r.status === "pending" || r.status === "error" || staleAgainstRubric(r)
     );
 
     let successCount = 0;
     let errorCount = 0;
+    let finished = 0;
 
-    for (let i = 0; i < toEvaluate.length; i++) {
-      const response = toEvaluate[i];
-      setEvalProgress(
-        `Evaluating ${response.vendor_name}... (${i + 1} of ${toEvaluate.length})`
-      );
+    setEvalProgress(
+      `Evaluating ${toEvaluate.length} response${toEvaluate.length === 1 ? "" : "s"}...`
+    );
 
+    const evaluateOne = async (response: (typeof toEvaluate)[number]) => {
       // Set status to evaluating in local state
       setResponses((prev) =>
         prev.map((r) =>
@@ -330,11 +404,15 @@ export default function ResponsesPage({
           );
         }
 
-        // Set status to evaluated in local state
+        // Set status to evaluated in local state, and scored against the
+        // rubric as it is now.
         setResponses((prev) =>
           prev.map((r) =>
             r.id === response.id ? { ...r, status: "evaluated" } : r
           )
+        );
+        setScoredAgainst((prev) =>
+          new Map(prev).set(response.id, rubricUpdatedAt)
         );
 
         successCount++;
@@ -349,10 +427,29 @@ export default function ResponsesPage({
         errorCount++;
         const errMsg =
           err instanceof Error ? err.message : "Unknown error";
-        // Show error but continue to next
+        // Show error but continue with the rest
         console.error(`Evaluation failed for ${response.vendor_name}:`, errMsg);
       }
-    }
+
+      finished++;
+      setEvalProgress(`Evaluated ${finished} of ${toEvaluate.length}...`);
+    };
+
+    // Evaluations are independent of one another, so run several at once: done
+    // one at a time, an RFP with six proposals took six model calls' worth of
+    // wall clock. The cap is there because the rate limiter reserves per call
+    // and a wide fan-out would burn an hour's quota in one click; the per-row
+    // status badges are what tell the owner where things stand.
+    const queue = [...toEvaluate];
+    const workers = Array.from(
+      { length: Math.min(EVALUATION_CONCURRENCY, queue.length) },
+      async () => {
+        for (let next = queue.shift(); next !== undefined; next = queue.shift()) {
+          await evaluateOne(next);
+        }
+      }
+    );
+    await Promise.all(workers);
 
     setEvalProgress("");
     setEvaluating(false);
@@ -371,7 +468,7 @@ export default function ResponsesPage({
     if (successCount > 0 && errorCount === 0) {
       router.push(`/rfp/${id}/evaluations`);
     }
-  }, [canEvaluate, responses, router, id]);
+  }, [canEvaluate, responses, staleAgainstRubric, rubricUpdatedAt, router, id]);
 
   // -----------------------------------------------------------------------
   // Render
@@ -379,257 +476,278 @@ export default function ResponsesPage({
 
   return (
     <div className="min-h-screen bg-background">
-      {/* Header */}
-      <header className="border-b border-border">
-        <div className="container mx-auto flex h-16 items-center justify-between px-4">
-          <a
-            href="/dashboard"
-            className="text-lg font-bold tracking-tight text-primary"
+      <AppHeader rfpId={id} current="responses" />
+
+      <main className="container mx-auto max-w-2xl px-4 py-10">
+        <PageIntro eyebrow="Step 2 of 4" title="Add the proposals">
+          One PDF per vendor. Each one gets scored against the rubric you just
+          accepted, with the passage behind every score quoted back to you.
+        </PageIntro>
+
+        {/* ------------------------------------------------------------------
+         * Upload
+         *
+         * The drop target is now the primary element rather than a thin strip
+         * under a label, and it reacts while a file is over it — dropping a
+         * PDF onto a box that never acknowledges it is the moment people
+         * assume the app is broken.
+         * --------------------------------------------------------------- */}
+        <form onSubmit={handleUpload} className="mt-8 space-y-4">
+          <div
+            className={cn(
+              "flex cursor-pointer flex-col items-center justify-center rounded-xl px-6 py-10 text-center ring-1 transition-colors",
+              dragActive
+                ? "bg-muted ring-2 ring-primary"
+                : file
+                  ? "bg-muted/50 ring-foreground/10"
+                  : "bg-muted/30 ring-foreground/10 hover:bg-muted/60"
+            )}
+            onClick={() => document.getElementById("file-input")?.click()}
+            onDrop={(e) => {
+              e.preventDefault();
+              e.stopPropagation();
+              setDragActive(false);
+              const f = e.dataTransfer.files[0];
+              if (f) handleFileSelect(f);
+            }}
+            onDragOver={(e) => {
+              e.preventDefault();
+              e.stopPropagation();
+              setDragActive(true);
+            }}
+            onDragLeave={() => setDragActive(false)}
           >
-            OpenRFP
-          </a>
-          <div className="flex items-center gap-6">
-            <a
-              href={`/rfp/${id}/rubric`}
-              className="text-sm text-muted-foreground hover:text-foreground"
-            >
-              ← Rubric
-            </a>
-            <a
-              href="/dashboard"
-              className="text-sm text-muted-foreground hover:text-foreground"
-            >
-              ← Back to dashboard
-            </a>
-          </div>
-        </div>
-      </header>
-
-      <main className="container mx-auto max-w-2xl px-4 py-12">
-        <h1 className="text-2xl font-bold tracking-tight text-primary">
-          Upload vendor responses
-        </h1>
-        <p className="mt-2 text-sm text-muted-foreground">
-          Upload each vendor&apos;s proposal. The AI will evaluate each one
-          against the rubric.
-        </p>
-
-        {/* ----------------------------------------------------------------- */}
-        {/* Upload form */}
-        {/* ----------------------------------------------------------------- */}
-
-        <Card className="mt-8 border-border">
-          <CardContent className="p-6">
-            <form onSubmit={handleUpload} className="space-y-4">
-              <div className="space-y-2">
-                <Label htmlFor="vendor-name">Vendor Name</Label>
-                <Input
-                  id="vendor-name"
-                  type="text"
-                  required
-                  value={vendorName}
-                  onChange={(e) => setVendorName(e.target.value)}
-                  placeholder="e.g., ABC Building Envelope Consultants"
+            {file ? (
+              <>
+                <FileTextIcon
+                  className="size-6 text-primary"
+                  aria-hidden="true"
                 />
-              </div>
+                <p className="mt-3 text-sm font-medium text-foreground">
+                  {file.name}
+                </p>
+                <p className="mt-0.5 text-xs text-muted-foreground">
+                  {(file.size / 1024 / 1024).toFixed(1)} MB · click to choose a
+                  different file
+                </p>
+              </>
+            ) : (
+              <>
+                <UploadIcon
+                  className="size-6 text-muted-foreground"
+                  aria-hidden="true"
+                />
+                <p className="mt-3 text-sm font-medium text-foreground">
+                  Drop a proposal here
+                </p>
+                <p className="mt-0.5 text-xs text-muted-foreground">
+                  PDF, up to 25MB
+                </p>
+              </>
+            )}
+            <input
+              id="file-input"
+              type="file"
+              accept=".pdf,application/pdf"
+              className="hidden"
+              onChange={(e) => {
+                if (e.target.files?.[0]) {
+                  handleFileSelect(e.target.files[0]);
+                }
+              }}
+            />
+          </div>
 
-              <div className="space-y-2">
-                <Label htmlFor="file-input">Proposal Document (PDF, max 25MB)</Label>
-                <div
-                  className="flex min-h-[80px] cursor-pointer flex-col items-center justify-center rounded-lg border-2 border-dashed border-border bg-muted p-4 transition-colors hover:border-primary/50"
-                  onClick={() =>
-                    document.getElementById("file-input")?.click()
-                  }
-                  onDrop={(e) => {
-                    e.preventDefault();
-                    e.stopPropagation();
-                    const f = e.dataTransfer.files[0];
-                    if (f) handleFileSelect(f);
-                  }}
-                  onDragOver={(e) => {
-                    e.preventDefault();
-                    e.stopPropagation();
-                  }}
-                >
-                  {file ? (
-                    <p className="text-sm font-medium text-foreground">
-                      {file.name}
-                    </p>
-                  ) : (
-                    <p className="text-sm text-muted-foreground">
-                      Drop a PDF here or click to browse
-                    </p>
-                  )}
-                  <input
-                    id="file-input"
-                    type="file"
-                    accept=".pdf,application/pdf"
-                    className="hidden"
-                    onChange={(e) => {
-                      if (e.target.files?.[0]) {
-                        handleFileSelect(e.target.files[0]);
-                      }
-                    }}
-                  />
-                </div>
-                {fileError && (
-                  <p className="text-sm text-destructive">{fileError}</p>
-                )}
-              </div>
+          {fileError && <p className="text-sm text-destructive">{fileError}</p>}
 
-              <Button
-                type="submit"
-                disabled={!file || !vendorName.trim() || uploading || evaluating}
-                className="w-full"
-              >
-                {uploading ? "Uploading..." : "Add Response"}
-              </Button>
-            </form>
-          </CardContent>
-        </Card>
-
-        {/* ----------------------------------------------------------------- */}
-        {/* Error display */}
-        {/* ----------------------------------------------------------------- */}
+          <div className="flex flex-wrap items-end gap-3">
+            <div className="min-w-48 flex-1 space-y-1.5">
+              <Label htmlFor="vendor-name">Vendor name</Label>
+              <Input
+                id="vendor-name"
+                type="text"
+                required
+                value={vendorName}
+                onChange={(e) => setVendorName(e.target.value)}
+                placeholder="ABC Building Envelope Consultants"
+              />
+            </div>
+            <Button
+              type="submit"
+              disabled={!file || !vendorName.trim() || uploading || evaluating}
+            >
+              {uploading ? "Uploading…" : "Add proposal"}
+            </Button>
+          </div>
+        </form>
 
         {error && (
-          <div className="mt-4 rounded-md bg-destructive/10 p-3 text-sm text-destructive">
-            {error}
+          <div className="mt-6">
+            <ErrorState message={error} />
           </div>
         )}
 
-        {/* ----------------------------------------------------------------- */}
-        {/* Loading state */}
-        {/* ----------------------------------------------------------------- */}
-
-        {loading && (
-          <div className="mt-8 flex items-center justify-center py-12">
-            <div className="h-6 w-6 animate-spin rounded-full border-2 border-primary border-t-transparent" />
-            <span className="ml-3 text-sm text-muted-foreground">
-              Loading responses...
-            </span>
-          </div>
-        )}
-
-        {/* ----------------------------------------------------------------- */}
-        {/* Responses list */}
-        {/* ----------------------------------------------------------------- */}
-
-        {!loading && responses.length > 0 && (
-          <div className="mt-8">
-            <div className="flex items-center justify-between">
-              <h2 className="text-lg font-semibold text-primary">
-                {responses.length} {responses.length === 1 ? "response" : "responses"} uploaded
-              </h2>
+        {/* ------------------------------------------------------------------
+         * What's been added
+         * --------------------------------------------------------------- */}
+        {loading ? (
+          <p className="mt-10 text-sm text-muted-foreground">
+            Loading proposals…
+          </p>
+        ) : responses.length === 0 ? (
+          !error && (
+            <div className="mt-10">
+              <EmptyState title="No proposals yet">
+                Add the first vendor above. You can score them one at a time or
+                all at once.
+              </EmptyState>
             </div>
+          )
+        ) : (
+          <>
+            <h2 className="mt-10 text-sm font-semibold text-foreground">
+              {responses.length}{" "}
+              {responses.length === 1 ? "proposal" : "proposals"}
+            </h2>
 
-            <Separator className="my-4" />
+            {needsRescoring.length > 0 && (
+              <div
+                role="note"
+                className="mt-3 flex gap-2 rounded-lg bg-muted px-4 py-3 text-sm text-foreground"
+              >
+                <TriangleAlertIcon
+                  className="mt-0.5 size-4 shrink-0"
+                  style={{ color: "var(--status-warning)" }}
+                  aria-hidden="true"
+                />
+                <p>
+                  <span className="font-medium">
+                    The rubric changed after scoring.
+                  </span>{" "}
+                  {needsRescoring.length === 1
+                    ? "One proposal was scored"
+                    : `${needsRescoring.length} proposals were scored`}{" "}
+                  against criteria that are no longer in it:{" "}
+                  {needsRescoring.map((r) => r.vendor_name).join(", ")}. Score
+                  them again to bring them up to date.
+                </p>
+              </div>
+            )}
 
-            <div className="space-y-3">
-              {responses.map((response) => (
-                <Card key={response.id} className="border-border">
-                  <CardContent className="p-4">
-                    <div className="flex items-start justify-between gap-4">
-                      <div className="flex-1 space-y-2">
-                        <div className="flex items-center gap-2">
-                          <p className="font-medium text-sm text-foreground">
-                            {response.vendor_name}
-                          </p>
-                        </div>
-
-                        <div className="flex flex-wrap items-center gap-2">
-                          {statusBadge(response.status)}
-                          {ocrBadge(response.ocr_status)}
-                          {response.page_count > 0 && (
-                            <span className="text-xs text-muted-foreground">
-                              {response.page_count} page{response.page_count !== 1 ? "s" : ""}
-                            </span>
-                          )}
-                        </div>
-
-                        {response.ocr_status === "flagged" && (
-                          <div className="mt-2 rounded-md bg-yellow-50 border border-yellow-200 p-2 text-xs text-yellow-800">
-                            <p>
-                              ⚠ This PDF may need OCR. Please OCR it and re-upload for best results.{" "}
-                              <a
-                                href="https://www.adobe.com/acrobat/online/ocr-pdf.html"
-                                target="_blank"
-                                rel="noopener noreferrer"
-                                className="font-medium underline hover:text-yellow-900"
-                              >
-                                Run OCR on Adobe.com →
-                              </a>
-                            </p>
-                          </div>
+            <ul className="mt-3 divide-y divide-border/60 rounded-xl bg-card ring-1 ring-foreground/10">
+              {responses.map((response, index) => (
+                <li
+                  key={response.id}
+                  className="animate-reveal px-4 py-3"
+                  style={{ ["--reveal-i" as string]: index }}
+                >
+                  <div className="flex items-start justify-between gap-3">
+                    <div className="min-w-0 flex-1">
+                      <p className="truncate text-sm font-medium text-foreground">
+                        {response.vendor_name}
+                      </p>
+                      <div className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-1">
+                        <StatusDot status={response.status} />
+                        {staleAgainstRubric(response) && (
+                          <span
+                            className="text-xs font-medium"
+                            style={{ color: "var(--status-warning)" }}
+                          >
+                            Rubric changed since
+                          </span>
+                        )}
+                        {response.page_count > 0 && (
+                          <span className="text-xs text-muted-foreground">
+                            {response.page_count} page
+                            {response.page_count !== 1 ? "s" : ""}
+                          </span>
                         )}
                       </div>
-
-                      <div className="flex shrink-0 items-center">
-                        <Button
-                          variant="ghost"
-                          size="sm"
-                          onClick={() => handleRemove(response)}
-                          disabled={evaluating || uploading}
-                          className="text-xs text-destructive hover:text-destructive"
-                        >
-                          Remove
-                        </Button>
-                      </div>
                     </div>
-                  </CardContent>
-                </Card>
+                    <Button
+                      variant="ghost"
+                      size="icon-sm"
+                      onClick={() => handleRemove(response)}
+                      disabled={evaluating || uploading}
+                      aria-label={`Remove ${response.vendor_name}`}
+                      className="text-muted-foreground hover:text-destructive"
+                    >
+                      <Trash2Icon aria-hidden="true" />
+                    </Button>
+                  </div>
+
+                  {/* The one status worth spelling out: a proposal the model
+                      cannot read will score badly for the wrong reason. */}
+                  {response.ocr_status === "flagged" && (
+                    <div className="mt-2.5 flex gap-2 rounded-lg bg-muted/60 p-2.5">
+                      <ScanTextIcon
+                        className="mt-0.5 size-3.5 shrink-0"
+                        style={{ color: "var(--status-warning)" }}
+                        aria-hidden="true"
+                      />
+                      <p className="text-xs leading-snug text-foreground">
+                        This PDF looks like scanned images, so there is little
+                        text to read. Run OCR on it and re-upload, or the
+                        scores will reflect the scan rather than the proposal.{" "}
+                        <a
+                          href="https://www.adobe.com/acrobat/online/ocr-pdf.html"
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="font-medium text-primary underline-offset-4 hover:underline"
+                        >
+                          OCR it at Adobe
+                        </a>
+                      </p>
+                    </div>
+                  )}
+                </li>
               ))}
-            </div>
+            </ul>
 
-            {/* ----------------------------------------------------------------- */}
-            {/* Evaluate All */}
-            {/* ----------------------------------------------------------------- */}
-
-            <div className="mt-8">
-              {evaluating && evalProgress && (
-                <div className="mb-4 rounded-md bg-muted p-3 text-sm text-primary">
-                  {evalProgress}
-                </div>
-              )}
-
-              <Button
-                onClick={handleEvaluateAll}
-                disabled={!canEvaluate}
-                className="w-full"
-                size="lg"
-              >
-                {evaluating
-                  ? "Evaluating all responses..."
-                  : allEvaluated
-                    ? "All responses evaluated ✓"
-                    : `Evaluate ${pendingOrErrorResponses.length} response${pendingOrErrorResponses.length !== 1 ? "s" : ""} → View Results`}
-              </Button>
-
-              {allEvaluated && !evaluating && (
-                <p className="mt-2 text-center text-xs text-muted-foreground">
-                  All responses have been evaluated.{" "}
-                  <button
-                    onClick={() => router.push(`/rfp/${id}/evaluations`)}
-                    className="font-medium text-primary underline hover:text-primary/80"
-                  >
-                    View results →
-                  </button>
+            {/* --------------------------------------------------------------
+             * Score them
+             *
+             * Sticky, because this is the only thing on the page that starts
+             * work, and the list above it grows with every vendor added.
+             * ----------------------------------------------------------- */}
+            <div className="sticky bottom-0 -mx-4 mt-10 border-t border-border/70 bg-background/90 px-4 py-3 backdrop-blur-sm">
+              <div className="flex flex-wrap items-center justify-between gap-3">
+                <p className="text-xs text-muted-foreground">
+                  {evaluating
+                    ? evalProgress ||
+                      `Scoring up to ${EVALUATION_CONCURRENCY} at a time…`
+                    : allEvaluated
+                      ? "Every proposal is scored."
+                      : needsRescoring.length > 0
+                        ? `${toScore.length} to score against the current rubric.`
+                        : `${pendingOrErrorResponses.length} waiting to be scored.`}
                 </p>
-              )}
+                {allEvaluated && !evaluating ? (
+                  <Button
+                    size="lg"
+                    onClick={() => router.push(`/rfp/${id}/evaluations`)}
+                  >
+                    See the results
+                    <ArrowRightIcon aria-hidden="true" />
+                  </Button>
+                ) : (
+                  <Button
+                    onClick={handleEvaluateAll}
+                    disabled={!canEvaluate}
+                    size="lg"
+                  >
+                    {evaluating
+                      ? "Scoring…"
+                      : `${
+                          pendingOrErrorResponses.length === 0 ? "Re-score" : "Score"
+                        } ${toScore.length} proposal${
+                          toScore.length !== 1 ? "s" : ""
+                        }`}
+                  </Button>
+                )}
+              </div>
             </div>
-          </div>
-        )}
-
-        {/* ----------------------------------------------------------------- */}
-        {/* Empty state */}
-        {/* ----------------------------------------------------------------- */}
-
-        {!loading && responses.length === 0 && !error && (
-          <div className="mt-12 text-center">
-            <p className="text-sm text-muted-foreground">
-              No responses uploaded yet. Add your first vendor response above.
-            </p>
-          </div>
+          </>
         )}
       </main>
     </div>

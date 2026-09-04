@@ -2,6 +2,7 @@
 
 import { useEffect, useState, use, useCallback, useMemo } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
+import { PlusIcon, RotateCcwIcon, Trash2Icon } from "lucide-react";
 import { createClient } from "@/lib/supabase/client";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -9,11 +10,18 @@ import { Textarea } from "@/components/ui/textarea";
 import { Label } from "@/components/ui/label";
 import { Badge } from "@/components/ui/badge";
 import {
-  Card,
-  CardContent,
-  CardHeader,
-  CardTitle,
-} from "@/components/ui/card";
+  Accordion,
+  AccordionItem,
+  AccordionPanel,
+  AccordionTrigger,
+} from "@/components/ui/accordion";
+import { AppHeader, PageIntro } from "@/components/app-shell";
+import {
+  EmptyState,
+  ErrorState,
+  WorkingState,
+} from "@/components/stage-state";
+import { ScoreBar } from "@/components/viz/score-bar";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -56,7 +64,6 @@ function parseScaleRange(scale: string): number[] {
   return Array.from({ length: end - start + 1 }, (_, i) => start + i);
 }
 
-/** Build a fresh criterion with empty scale descriptions for a 1-5 scale */
 /**
  * The `rubrics.criteria` column holds the model's whole answer —
  * `{ criteria: [...], total_weight }` — while this page works on the array.
@@ -76,6 +83,7 @@ function normalizeRubric(row: Record<string, unknown>): Rubric {
   return { ...(row as Omit<Rubric, "criteria">), criteria, total_weight };
 }
 
+/** Build a fresh criterion with empty scale descriptions for a 1-5 scale */
 function makeBlankCriterion(): Criterion {
   return {
     id: `criterion_${crypto.randomUUID()}`,
@@ -86,6 +94,14 @@ function makeBlankCriterion(): Criterion {
     scale_descriptions: {},
   };
 }
+
+/** What the model is actually doing, for the wait. */
+const RUBRIC_NOTES = [
+  "Reading the RFP end to end.",
+  "Working out what this owner is actually buying.",
+  "Drafting criteria, then weighting them against each other.",
+  "Writing a description of each score level, so scoring isn't a gut feel.",
+];
 
 // ---------------------------------------------------------------------------
 // Component
@@ -252,6 +268,14 @@ export default function RubricPage({
     : 0;
   const weightsValid = Math.abs(weightSum - 100) < 0.01;
 
+  /** The criterion this RFP leans on hardest — the one line worth surfacing. */
+  const heaviest = useMemo(() => {
+    if (!rubric?.criteria.length) return null;
+    return rubric.criteria.reduce((top, c) =>
+      (c.weight || 0) > (top.weight || 0) ? c : top
+    );
+  }, [rubric]);
+
   // -----------------------------------------------------------------------
   // Save
   // -----------------------------------------------------------------------
@@ -291,357 +315,331 @@ export default function RubricPage({
   };
 
   // -----------------------------------------------------------------------
-  // Render: loading
+  // Render
   // -----------------------------------------------------------------------
 
-  if (loading) {
-    return (
-      <div className="flex min-h-screen flex-col items-center justify-center bg-background">
-        <header className="absolute top-0 w-full border-b">
-          <div className="container mx-auto flex h-16 items-center justify-between px-4">
-            <a
-              href="/dashboard"
-              className="text-lg font-bold tracking-tight text-primary"
-            >
-              OpenRFP
-            </a>
-            <a
-              href="/dashboard"
-              className="text-sm text-muted-foreground hover:text-foreground"
-            >
-              ← Back to dashboard
-            </a>
-          </div>
-        </header>
-        <div className="text-center">
-          <div className="mb-4 h-8 w-8 animate-spin rounded-full border-4 border-primary border-t-transparent" />
-          <p className="text-sm text-muted-foreground">
-            Reading your RFP and generating evaluation criteria…
-          </p>
-          <p className="mt-1 text-xs text-muted-foreground">
-            This usually takes 15–60 seconds
-          </p>
-        </div>
-      </div>
-    );
-  }
-
-  // -----------------------------------------------------------------------
-  // Render: error
-  // -----------------------------------------------------------------------
-
-  if (error) {
-    return (
-      <div className="flex min-h-screen flex-col bg-background">
-        <header className="border-b">
-          <div className="container mx-auto flex h-16 items-center justify-between px-4">
-            <a
-              href="/dashboard"
-              className="text-lg font-bold tracking-tight text-primary"
-            >
-              OpenRFP
-            </a>
-            <a
-              href="/dashboard"
-              className="text-sm text-muted-foreground hover:text-foreground"
-            >
-              ← Back to dashboard
-            </a>
-          </div>
-        </header>
-        <div className="flex flex-1 flex-col items-center justify-center px-4">
-          <div className="max-w-md text-center">
-            <p className="text-sm text-destructive">{error}</p>
-            <Button onClick={regenerate} className="mt-4">
-              Try again
-            </Button>
-          </div>
-        </div>
-      </div>
-    );
-  }
-
-  // -----------------------------------------------------------------------
-  // Render: no rubric — show generate button
-  // -----------------------------------------------------------------------
-
-  if (noRubric && !rubric) {
-    return (
-      <div className="flex min-h-screen flex-col bg-background">
-        <header className="border-b">
-          <div className="container mx-auto flex h-16 items-center justify-between px-4">
-            <a
-              href="/dashboard"
-              className="text-lg font-bold tracking-tight text-primary"
-            >
-              OpenRFP
-            </a>
-            <a
-              href="/dashboard"
-              className="text-sm text-muted-foreground hover:text-foreground"
-            >
-              ← Back to dashboard
-            </a>
-          </div>
-        </header>
-        <div className="flex flex-1 flex-col items-center justify-center px-4">
-          <div className="max-w-md text-center">
-            <h2 className="text-xl font-semibold text-foreground">
-              No rubric yet
-            </h2>
-            <p className="mt-2 text-sm text-muted-foreground">
-              Generate an evaluation rubric from your RFP document.
-            </p>
-            <Button onClick={regenerate} className="mt-6">
-              Generate Rubric
-            </Button>
-          </div>
-        </div>
-      </div>
-    );
-  }
-
-  // -----------------------------------------------------------------------
-  // Render: rubric loaded but empty (safety)
-  // -----------------------------------------------------------------------
-
-  if (!rubric) {
-    return (
-      <div className="flex min-h-screen flex-col bg-background">
-        <header className="border-b">
-          <div className="container mx-auto flex h-16 items-center justify-between px-4">
-            <a
-              href="/dashboard"
-              className="text-lg font-bold tracking-tight text-primary"
-            >
-              OpenRFP
-            </a>
-            <a
-              href="/dashboard"
-              className="text-sm text-muted-foreground hover:text-foreground"
-            >
-              ← Back to dashboard
-            </a>
-          </div>
-        </header>
-        <div className="flex flex-1 flex-col items-center justify-center px-4">
-          <Button onClick={regenerate}>Generate Rubric</Button>
-        </div>
-      </div>
-    );
-  }
-
-  // -----------------------------------------------------------------------
-  // Render: main editor
-  // -----------------------------------------------------------------------
-
-  const criteria = rubric.criteria || [];
+  const criteria = rubric?.criteria ?? [];
 
   return (
     <div className="min-h-screen bg-background">
-      {/* Header */}
-      <header className="border-b">
-        <div className="container mx-auto flex h-16 items-center justify-between px-4">
-          <a
-            href="/dashboard"
-            className="text-lg font-bold tracking-tight text-primary"
+      <AppHeader rfpId={id} current="rubric" />
+
+      <main className="container mx-auto max-w-3xl px-4 py-10">
+        {loading ? (
+          <WorkingState
+            title="Building your rubric"
+            notes={RUBRIC_NOTES}
+            expected="15–60 seconds"
+          />
+        ) : error && !rubric ? (
+          <ErrorState
+            message={error}
+            action={
+              <Button size="sm" onClick={regenerate}>
+                Try again
+              </Button>
+            }
+          />
+        ) : noRubric || !rubric ? (
+          <EmptyState
+            title="No rubric yet"
+            action={<Button onClick={regenerate}>Generate rubric</Button>}
           >
-            OpenRFP
-          </a>
-          <a
-            href="/dashboard"
-            className="text-sm text-muted-foreground hover:text-foreground"
-          >
-            ← Back to dashboard
-          </a>
-        </div>
-      </header>
+            OpenRFP will read your RFP and propose the criteria to score
+            proposals against. You can change all of it.
+          </EmptyState>
+        ) : (
+          <>
+            <PageIntro
+              eyebrow="Step 1 of 4"
+              title="How you'll score the proposals"
+              action={
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  onClick={regenerate}
+                  className="text-muted-foreground"
+                >
+                  <RotateCcwIcon aria-hidden="true" />
+                  Regenerate
+                </Button>
+              }
+            >
+              {criteria.length} criteria, drawn from your RFP.{" "}
+              {heaviest && (
+                <>
+                  It leans hardest on{" "}
+                  <span className="font-medium text-foreground">
+                    {heaviest.name}
+                  </span>{" "}
+                  at {heaviest.weight}%.
+                </>
+              )}{" "}
+              Open any row to change it.
+            </PageIntro>
 
-      <main className="container mx-auto max-w-3xl px-4 py-12">
-        {/* Title row */}
-        <div className="flex items-start justify-between gap-4">
-          <div>
-            <h1 className="text-2xl font-bold tracking-tight text-foreground">
-              Review Evaluation Rubric
-            </h1>
-            <p className="mt-1 text-sm text-muted-foreground">
-              The AI generated these criteria from your RFP. Edit any criterion,
-              adjust weights, then accept to proceed.
-            </p>
-          </div>
-          <Button
-            variant="ghost"
-            onClick={regenerate}
-            className="shrink-0 text-muted-foreground underline-offset-4 hover:text-foreground"
-          >
-            Regenerate
-          </Button>
-        </div>
+            {error && (
+              <div className="mt-6">
+                <ErrorState message={error} />
+              </div>
+            )}
 
-        {/* Weight validation banner */}
-        <div
-          className={`mt-6 flex items-center gap-2 rounded-lg px-4 py-3 text-sm ${
-            weightsValid
-              ? "bg-muted text-primary"
-              : "bg-destructive/10 text-destructive"
-          }`}
-        >
-          {weightsValid ? (
-            <span className="font-medium text-primary">
-              ✓ Weights sum to 100%
-            </span>
-          ) : (
-            <span className="font-medium">
-              ⚠ Weights sum to {weightSum}%, should be 100%
-            </span>
-          )}
-        </div>
+            {/* --------------------------------------------------------------
+             * Weight summary
+             *
+             * The weights are the rubric's real content — they decide the
+             * ranking — so they get the top of the page as bars rather than
+             * being buried as a number in each of eight open forms. Bars are
+             * comparable at a glance in a way "30%… 25%… 20%" is not.
+             * ----------------------------------------------------------- */}
+            <div className="mt-8 flex items-center justify-between gap-4">
+              <h2 className="text-sm font-semibold text-foreground">
+                Weighting
+              </h2>
+              <WeightTotal sum={weightSum} valid={weightsValid} />
+            </div>
 
-        {/* Unsaved changes indicator */}
-        {hasEdits && (
-          <div className="mt-3">
-            <Badge variant="secondary">Unsaved changes</Badge>
-          </div>
-        )}
+            <div className="mt-3 space-y-2.5">
+              {criteria.map((criterion, index) => (
+                <div
+                  key={criterion.id || index}
+                  className="animate-reveal grid grid-cols-[1fr_auto] items-center gap-x-3 gap-y-1"
+                  style={{ ["--reveal-i" as string]: index }}
+                >
+                  <span className="truncate text-xs text-foreground">
+                    {criterion.name}
+                  </span>
+                  <span className="text-xs font-semibold tabular-nums text-foreground">
+                    {criterion.weight}%
+                  </span>
+                  <ScoreBar
+                    percent={criterion.weight}
+                    index={index}
+                    thickness="thin"
+                    className="col-span-2"
+                  />
+                </div>
+              ))}
+            </div>
 
-        {/* Criteria cards */}
-        <div className="mt-8 space-y-4">
-          {criteria.map((criterion, index) => {
-            const scores = parseScaleRange(criterion.scoring_scale);
-            return (
-              <Card key={criterion.id || index}>
-                <CardHeader className="pb-3">
-                  <div className="flex items-center justify-between">
-                    <CardTitle className="text-lg text-primary">
-                      Criterion {index + 1}
-                    </CardTitle>
-                    <Button
-                      variant="ghost"
-                      size="sm"
-                      onClick={() => removeCriterion(index)}
-                      className="text-xs text-destructive hover:text-destructive"
-                    >
-                      Remove
-                    </Button>
-                  </div>
-                </CardHeader>
-                <CardContent className="space-y-4">
-                  {/* Name */}
-                  <div className="space-y-1.5">
-                    <Label htmlFor={`name-${index}`}>Criterion Name</Label>
-                    <Input
-                      id={`name-${index}`}
-                      value={criterion.name}
-                      onChange={(e) =>
-                        updateCriterion(index, { name: e.target.value })
-                      }
-                    />
-                  </div>
+            {/* --------------------------------------------------------------
+             * The criteria themselves
+             *
+             * Collapsed, each row is the summary a reader needs; the full
+             * editor — description, weight, and one input per score level —
+             * only appears when they ask for it. Every criterion open at once
+             * was roughly sixty form fields on one screen.
+             * ----------------------------------------------------------- */}
+            <div className="mt-10 flex items-center justify-between gap-4">
+              <h2 className="text-sm font-semibold text-foreground">
+                Criteria
+              </h2>
+              {hasEdits && <Badge variant="secondary">Unsaved changes</Badge>}
+            </div>
 
-                  {/* Description */}
-                  <div className="space-y-1.5">
-                    <Label htmlFor={`desc-${index}`}>Description</Label>
-                    <Textarea
-                      id={`desc-${index}`}
-                      value={criterion.description}
-                      rows={3}
-                      onChange={(e) =>
-                        updateCriterion(index, { description: e.target.value })
-                      }
-                    />
-                  </div>
+            <Accordion className="mt-3 gap-2.5">
+              {criteria.map((criterion, index) => {
+                const scores = parseScaleRange(criterion.scoring_scale);
+                return (
+                  <AccordionItem
+                    key={criterion.id || index}
+                    value={criterion.id || String(index)}
+                    className="animate-reveal"
+                    style={{ ["--reveal-i" as string]: index }}
+                  >
+                    <AccordionTrigger>
+                      <span className="flex size-6 shrink-0 items-center justify-center rounded-md bg-muted text-xs font-semibold text-primary">
+                        {index + 1}
+                      </span>
+                      <span className="min-w-0 flex-1">
+                        <span className="block truncate text-sm font-medium text-foreground">
+                          {criterion.name}
+                        </span>
+                        {criterion.description && (
+                          <span className="mt-0.5 block truncate text-xs text-muted-foreground">
+                            {criterion.description}
+                          </span>
+                        )}
+                      </span>
+                      <span className="shrink-0 text-xs font-semibold tabular-nums text-foreground">
+                        {criterion.weight}%
+                      </span>
+                    </AccordionTrigger>
 
-                  {/* Weight + Scale */}
-                  <div className="grid grid-cols-2 gap-4">
-                    <div className="space-y-1.5">
-                      <Label htmlFor={`weight-${index}`}>Weight (%)</Label>
-                      <Input
-                        id={`weight-${index}`}
-                        type="number"
-                        min={0}
-                        max={100}
-                        value={criterion.weight}
-                        onChange={(e) =>
-                          updateCriterion(index, {
-                            weight:
-                              e.target.value === ""
-                                ? 0
-                                : Math.max(
-                                    0,
-                                    Math.min(100, Number(e.target.value)),
-                                  ),
-                          })
-                        }
-                      />
-                    </div>
-                    <div className="space-y-1.5">
-                      <Label>Scoring Scale</Label>
-                      <div className="flex h-9 items-center rounded-md border border-input bg-muted px-3 text-sm text-muted-foreground">
-                        {criterion.scoring_scale}
-                      </div>
-                    </div>
-                  </div>
+                    <AccordionPanel>
+                      <div className="space-y-4">
+                        <div className="space-y-1.5">
+                          <Label htmlFor={`name-${index}`}>Name</Label>
+                          <Input
+                            id={`name-${index}`}
+                            value={criterion.name}
+                            onChange={(e) =>
+                              updateCriterion(index, { name: e.target.value })
+                            }
+                          />
+                        </div>
 
-                  {/* Scale descriptions */}
-                  {scores.length > 0 && (
-                    <div className="space-y-2">
-                      <Label className="text-sm font-medium">
-                        Scale Descriptions
-                      </Label>
-                      <div className="space-y-2">
-                        {scores.map((score) => (
-                          <div key={score} className="flex items-start gap-3">
-                            <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-md bg-muted text-sm font-semibold text-primary">
-                              {score}
-                            </div>
+                        <div className="space-y-1.5">
+                          <Label htmlFor={`desc-${index}`}>
+                            What this criterion measures
+                          </Label>
+                          <Textarea
+                            id={`desc-${index}`}
+                            value={criterion.description}
+                            rows={3}
+                            onChange={(e) =>
+                              updateCriterion(index, {
+                                description: e.target.value,
+                              })
+                            }
+                          />
+                        </div>
+
+                        <div className="grid grid-cols-2 gap-4">
+                          <div className="space-y-1.5">
+                            <Label htmlFor={`weight-${index}`}>
+                              Weight (%)
+                            </Label>
                             <Input
-                              value={criterion.scale_descriptions?.[String(score)] || ""}
-                              placeholder={`Description for score ${score}`}
+                              id={`weight-${index}`}
+                              type="number"
+                              min={0}
+                              max={100}
+                              value={criterion.weight}
                               onChange={(e) =>
-                                updateScaleDescription(
-                                  index,
-                                  String(score),
-                                  e.target.value,
-                                )
+                                updateCriterion(index, {
+                                  weight:
+                                    e.target.value === ""
+                                      ? 0
+                                      : Math.max(
+                                          0,
+                                          Math.min(100, Number(e.target.value)),
+                                        ),
+                                })
                               }
                             />
                           </div>
-                        ))}
+                          <div className="space-y-1.5">
+                            <Label>Scale</Label>
+                            <div className="flex h-9 items-center rounded-md bg-muted px-3 text-sm text-muted-foreground">
+                              {criterion.scoring_scale}
+                            </div>
+                          </div>
+                        </div>
+
+                        {scores.length > 0 && (
+                          <div className="space-y-2">
+                            <Label className="text-sm font-medium">
+                              What each score means
+                            </Label>
+                            <div className="space-y-2">
+                              {scores.map((score) => (
+                                <div
+                                  key={score}
+                                  className="flex items-start gap-3"
+                                >
+                                  <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-md bg-muted text-sm font-semibold text-primary">
+                                    {score}
+                                  </div>
+                                  <Input
+                                    value={
+                                      criterion.scale_descriptions?.[
+                                        String(score)
+                                      ] || ""
+                                    }
+                                    placeholder={`A ${score} looks like…`}
+                                    onChange={(e) =>
+                                      updateScaleDescription(
+                                        index,
+                                        String(score),
+                                        e.target.value,
+                                      )
+                                    }
+                                  />
+                                </div>
+                              ))}
+                            </div>
+                          </div>
+                        )}
+
+                        <div className="flex justify-end pt-1">
+                          <Button
+                            variant="ghost"
+                            size="sm"
+                            onClick={() => removeCriterion(index)}
+                            className="text-destructive hover:text-destructive"
+                          >
+                            <Trash2Icon aria-hidden="true" />
+                            Remove criterion
+                          </Button>
+                        </div>
                       </div>
-                    </div>
-                  )}
-                </CardContent>
-              </Card>
-            );
-          })}
-        </div>
+                    </AccordionPanel>
+                  </AccordionItem>
+                );
+              })}
+            </Accordion>
 
-        {/* Add criterion + accept row */}
-        <div className="mt-8 flex items-center justify-between">
-          <Button variant="outline" onClick={addCriterion}>
-            + Add Criterion
-          </Button>
-          <div className="flex items-center gap-3">
-            {saving && (
-              <span className="text-sm text-muted-foreground">Saving…</span>
-            )}
-            <Button
-              onClick={acceptRubric}
-              disabled={!weightsValid || saving}
-              className={weightsValid ? "" : "cursor-not-allowed opacity-50"}
-            >
-              {saving ? "Saving…" : "Accept Rubric →"}
-            </Button>
-          </div>
-        </div>
+            <div className="mt-4">
+              <Button variant="outline" size="sm" onClick={addCriterion}>
+                <PlusIcon aria-hidden="true" />
+                Add criterion
+              </Button>
+            </div>
 
-        {/* Helpful hint when weights are invalid */}
-        {!weightsValid && (
-          <p className="mt-3 text-right text-xs text-muted-foreground">
-            Adjust criterion weights so they total 100% to enable Accept.
-          </p>
+            {/* --------------------------------------------------------------
+             * The one action, kept in reach
+             *
+             * A rubric runs long enough to scroll, and Accept used to sit at
+             * the very bottom past every open form. Sticky means the way
+             * forward — and why it is disabled — is always visible.
+             * ----------------------------------------------------------- */}
+            <div className="sticky bottom-0 -mx-4 mt-10 border-t border-border/70 bg-background/90 px-4 py-3 backdrop-blur-sm">
+              <div className="flex items-center justify-between gap-4">
+                <p className="text-xs text-muted-foreground">
+                  {weightsValid
+                    ? "Weights total 100%. Ready to score proposals."
+                    : `Weights total ${weightSum}% — adjust to 100% to continue.`}
+                </p>
+                <Button
+                  onClick={acceptRubric}
+                  disabled={!weightsValid || saving}
+                >
+                  {saving ? "Saving…" : "Accept & add proposals"}
+                </Button>
+              </div>
+            </div>
+          </>
         )}
       </main>
     </div>
+  );
+}
+
+/**
+ * The weight total, as a status rather than a banner.
+ *
+ * It is only interesting when it is wrong, so when it is right it says so in
+ * one quiet line instead of a full-width green bar.
+ */
+function WeightTotal({ sum, valid }: { sum: number; valid: boolean }) {
+  return (
+    <span
+      className="flex items-center gap-1.5 text-xs font-medium"
+      role={valid ? undefined : "alert"}
+    >
+      <span
+        className="size-2 rounded-full"
+        style={{
+          backgroundColor: valid
+            ? "var(--status-good)"
+            : "var(--status-critical)",
+        }}
+        aria-hidden="true"
+      />
+      <span className={valid ? "text-muted-foreground" : "text-destructive"}>
+        {valid ? "Totals 100%" : `Totals ${sum}% — should be 100%`}
+      </span>
+    </span>
   );
 }

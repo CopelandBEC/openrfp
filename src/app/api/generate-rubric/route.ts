@@ -1,9 +1,12 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createClient } from "@/lib/supabase/server";
 import {
+  cacheAffinityOptions,
+  promptCacheOptions,
   createAIClient,
   getMaxCompletionTokens,
   getModelId,
+  getReasoningEffort,
   parseModelJson,
   truncateForModel,
 } from "@/lib/ai/client";
@@ -69,16 +72,23 @@ export async function POST(request: NextRequest) {
   const { text: rfpText, truncated } = truncateForModel(rfp.rfp_text);
   const { system, user: userPrompt } = buildRubricPrompt(rfpText);
 
+  const reasoningEffort = getReasoningEffort("rubric");
+
   try {
-    const response = await client.chat.completions.create({
-      model,
-      messages: [
-        { role: "system", content: system },
-        { role: "user", content: userPrompt },
-      ],
-      response_format: { type: "json_object" },
-      max_tokens: getMaxCompletionTokens(),
-    });
+    const response = await client.chat.completions.create(
+      {
+        model,
+        messages: [
+          { role: "system", content: system },
+          { role: "user", content: userPrompt },
+        ],
+        response_format: { type: "json_object" },
+        max_tokens: getMaxCompletionTokens(),
+        ...(reasoningEffort ? { reasoning_effort: reasoningEffort } : {}),
+        ...promptCacheOptions(rfp.id),
+      },
+      cacheAffinityOptions(rfp.id)
+    );
 
     const content = response.choices[0]?.message?.content;
     if (!content) {
@@ -124,7 +134,12 @@ export async function POST(request: NextRequest) {
       rfp_id: rfp.id,
       user_id: user.id,
       action: "generate_rubric",
-      details: { model, prompt_version: PROMPT_VERSION, truncated },
+      details: {
+        model,
+        prompt_version: PROMPT_VERSION,
+        truncated,
+        reasoning_effort: reasoningEffort ?? null,
+      },
     });
 
     return NextResponse.json({ rubric: savedRubric });

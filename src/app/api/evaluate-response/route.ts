@@ -1,11 +1,15 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createClient } from "@/lib/supabase/server";
 import {
+  cacheAffinityOptions,
+  promptCacheOptions,
   createAIClient,
   getMaxCompletionTokens,
   getModelId,
+  getReasoningEffort,
   parseModelJson,
   truncateForModel,
+  getServingHost,
 } from "@/lib/ai/client";
 import {
   buildEvaluationPrompt,
@@ -63,9 +67,12 @@ export async function POST(request: NextRequest) {
   }
 
   // Fetch rubric
+  // `updated_at` is when the criteria last changed; it is stamped onto the
+  // evaluation so every screen can tell scores made against this rubric from
+  // scores made against an earlier one.
   const { data: rubric } = await supabase
     .from("rubrics")
-    .select("criteria")
+    .select("criteria, updated_at, edited_by_user")
     .eq("rfp_id", responseRecord.rfp_id)
     .single();
 
@@ -73,6 +80,15 @@ export async function POST(request: NextRequest) {
     return NextResponse.json(
       { error: "No rubric found for this RFP" },
       { status: 400 }
+    );
+  }
+  // Scoring is against a rubric a human has signed off on. Regenerating the
+  // rubric resets that, and the screens stop offering scoring until it is
+  // accepted again; this is the same rule for any caller.
+  if (rubric.edited_by_user !== true) {
+    return NextResponse.json(
+      { error: "Review and accept the rubric before scoring against it." },
+      { status: 409 }
     );
   }
 
@@ -115,16 +131,26 @@ export async function POST(request: NextRequest) {
     responseRecord.vendor_name
   );
 
+  const reasoningEffort = getReasoningEffort("evaluation");
+  // Keyed on the RFP, not the response: every proposal under one RFP shares the
+  // system-prompt-plus-rubric prefix, so they should share a cache and a replica.
+  const cacheKey = responseRecord.rfp_id;
+
   try {
-    const response = await client.chat.completions.create({
-      model,
-      messages: [
-        { role: "system", content: system },
-        { role: "user", content: userPrompt },
-      ],
-      response_format: { type: "json_object" },
-      max_tokens: getMaxCompletionTokens(),
-    });
+    const response = await client.chat.completions.create(
+      {
+        model,
+        messages: [
+          { role: "system", content: system },
+          { role: "user", content: userPrompt },
+        ],
+        response_format: { type: "json_object" },
+        max_tokens: getMaxCompletionTokens(),
+        ...(reasoningEffort ? { reasoning_effort: reasoningEffort } : {}),
+        ...promptCacheOptions(cacheKey),
+      },
+      cacheAffinityOptions(cacheKey)
+    );
 
     const content = response.choices[0]?.message?.content;
     if (!content) {
@@ -160,7 +186,9 @@ export async function POST(request: NextRequest) {
           strengths: evaluation.strengths,
           weaknesses: evaluation.weaknesses,
           model_used: model,
+          served_by: getServingHost(),
           prompt_version: PROMPT_VERSION,
+          rubric_updated_at: rubric.updated_at,
         },
         { onConflict: "response_id" }
       )
@@ -188,6 +216,7 @@ export async function POST(request: NextRequest) {
         model,
         overall_score: overallScore,
         truncated,
+        reasoning_effort: reasoningEffort ?? null,
       },
     });
 

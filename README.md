@@ -27,7 +27,11 @@ Every evaluation prompt, scoring rubric, and comparison logic is visible in this
 
 - **Frontend:** Next.js 16 + React 19 + TypeScript + shadcn/ui + Tailwind CSS
 - **Backend:** Supabase (PostgreSQL + Auth + Storage + Row-Level Security)
-- **AI:** Fireworks AI (model-agnostic architecture — switch models via env vars)
+- **AI:** Fireworks AI, a US company. The default model is Kimi K3, an
+  open-weight model that Fireworks serves; Fireworks does not store prompts or
+  outputs or use them for training, and the model's developer (Moonshot AI)
+  never receives your documents. The architecture is model-agnostic — switch
+  models via env vars.
 - **Hosting:** Vercel
 
 ## Getting started
@@ -68,6 +72,25 @@ that signs up can spend your provider budget.
 
 `schema.sql` is idempotent — re-run the whole file to pick up schema or policy
 changes without recreating the project.
+
+**Re-run `schema.sql` before deploying the version that added `updated_at` to
+`rubrics`, `evaluations` and `comparisons`, `rubric_updated_at` to
+`evaluations`, `evaluation_revisions` to `comparisons`, and `served_by` to
+both, not after.** The dashboard reads those columns to tell a
+current ranking from one that predates a score or a rubric change, and the
+scoring route stamps each evaluation with the rubric it scored against.
+PostgREST rejects the whole query when a selected column is missing — so until
+the migration is applied the dashboard cannot list any RFPs and scoring fails.
+After it is applied, every existing ranking reads as out of date once — nothing
+recorded which scores it saw, and the migration does not pretend to know — and
+one re-rank per RFP clears it. Existing rows also carry no record of which
+endpoint served them, so the screens name their model without saying where it
+ran; if every row was produced through the default endpoint, `schema.sql` has a
+commented statement that records that, to run deliberately. It says so, with the
+database's message, rather than rendering its empty state; nothing is lost and
+applying the schema restores them. The backfill sets `updated_at` from
+`created_at`, so existing rows read as last changed when they were made rather
+than all reading as "changed just now".
 
 **Upgrading from a version without guest mode? Re-run `schema.sql` before you
 deploy the new code, not after.** The AI routes now reserve every call through
@@ -267,6 +290,8 @@ The app uses a model-agnostic architecture. To change the AI model, just update 
 
 ```env
 AI_PROVIDER=fireworks
+# Kimi K3, open-weight, served by Fireworks AI, a US company. Fireworks retains
+# nothing; the model's developer never receives your documents.
 AI_MODEL=accounts/fireworks/models/kimi-k3
 AI_BASE_URL=https://api.fireworks.ai/inference/v1
 ```
@@ -276,6 +301,68 @@ Any OpenAI-compatible API works, provided the model supports
 reply as JSON. Document text is truncated at `AI_MAX_DOC_CHARS` (default
 400,000) before it is sent, so a very long PDF doesn't overrun a smaller
 model's context window. See `.env.example` for all options.
+
+### Latency
+
+On a reasoning model, the dominant cost is the thinking that happens before the
+JSON starts, and most models default to their highest effort. Three variables
+set it per call site — `AI_REASONING_EFFORT_RUBRIC`,
+`AI_REASONING_EFFORT_EVALUATION` and `AI_REASONING_EFFORT_COMPARISON` — with
+the middle one, the call that runs once per proposal, deliberately low: it is
+applying a rubric that already exists. Those defaults apply only to the default
+model. If you set `AI_MODEL`, nothing is sent unless you set these too — an
+OpenAI-compatible endpoint that does not accept the parameter rejects the whole
+request, so a model swap must not start sending it unasked. Set a variable to
+an empty string to omit the parameter for the default model as well.
+
+Two things beyond model choice matter as much:
+
+- The responses screen evaluates proposals concurrently, capped at
+  `EVALUATION_CONCURRENCY` in `src/app/(app)/rfp/[id]/responses/page.tsx`.
+  Serialised, an RFP cost one model call's latency per proposal.
+- The evaluation prompt puts the system instructions and the rubric ahead of
+  anything vendor-specific, so every proposal under one RFP shares a
+  byte-identical prefix. The routes send that RFP's id in the
+  `x-session-affinity` header and, to the default endpoint, as
+  `prompt_cache_key` in the body, which is what keeps those calls on a replica
+  that already has the prefix cached. The body field goes only to the default
+  `AI_BASE_URL`: a strict OpenAI-compatible endpoint that does not implement it
+  rejects the request. Set `AI_PROMPT_CACHE_KEY=1` to send it elsewhere, or `0`
+  to withhold it. Reordering the prompt or changing the reasoning effort
+  invalidates the cached prefix.
+
+## Interface conventions
+
+Two rules shape every result screen, and breaking either is how these pages
+became walls of text the first time.
+
+**The answer first, the evidence behind a press.** Each screen opens with the
+one thing the reader came for — the rubric's weighting, a proposal's score and
+where it is thin, the recommended vendor and how far clear of second place it
+is. Everything that supports it (a criterion's reasoning, the quoted passage,
+the model and prompt version, the full comparative analysis) lives inside an
+`Accordion` or `Collapsible` from `src/components/ui/`. Nothing is dropped to
+make room; it is folded. The exported HTML report follows the same order using
+native `<details>`.
+
+**Colour encodes one thing at a time.** `src/app/globals.css` defines a single
+sequential green ramp (`--viz-100` … `--viz-700`), generated in OKLCH from the
+brand primary so its lightness steps are even, plus the five heat-grid bins and
+their ink colours. Scores are magnitude: every bar wears `--viz-mark` and the
+length carries the value, because colouring a bar by its own value spends the
+identity channel restating what length already shows. Judgement is carried by
+the verdict word from `src/lib/score.ts` (`TierChip`), never by hue alone —
+status colour rides an icon beside a label so it survives greyscale printing
+and colour-blind readers.
+
+The ramp, the bins and every ink pairing were checked with the data-viz
+validator: monotone lightness, adjacent steps at least 0.06 L apart, a single
+hue, marks clearing 3:1 on their surface in both modes, and every heat-cell
+number clearing 4.5:1 against its cell. The palest bin sits below 3:1 on
+purpose — near-zero recedes toward the surface — which is why every cell also
+prints its number. `src/lib/score.ts` is the single source of truth for
+thresholds, so a criterion that reads "Mixed" on screen reads "Mixed" in the
+CSV and the report.
 
 ## Status
 

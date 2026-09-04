@@ -1,4 +1,4 @@
-export const PROMPT_VERSION = "1.0.0";
+export const PROMPT_VERSION = "1.1.0";
 
 export interface EvaluationScore {
   score: number;
@@ -57,15 +57,20 @@ Return your response as a JSON object matching this exact structure:
 
 Be rigorous, fair, and consistent. The owner trusts your evaluation to help them make an important decision.`;
 
-  const user = `You are evaluating the response from "${vendorName}".
-
-EVALUATION RUBRIC:
+  // Order matters beyond readability: the system prompt and the rubric are
+  // identical for every proposal under one RFP, so keeping them ahead of
+  // anything vendor-specific makes them a reusable cached prefix. Naming the
+  // vendor in the opening line — as this prompt used to — moved the first
+  // difference to the top of the message and made that reuse impossible.
+  const user = `EVALUATION RUBRIC:
 ${rubricJson}
 
-VENDOR PROPOSAL:
+---
+
+VENDOR PROPOSAL — from "${vendorName}":
 ${responseText}
 
-Evaluate this proposal against every criterion in the rubric. Return only valid JSON.`;
+Evaluate this proposal from "${vendorName}" against every criterion in the rubric. Return only valid JSON.`;
 
   return { system, user };
 }
