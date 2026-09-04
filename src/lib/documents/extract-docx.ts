@@ -84,6 +84,10 @@ async function readPageCount(buffer: Buffer): Promise<number> {
  * Ordered list items are numbered by their nesting path ("2.1.") rather
  * than bulleted, so a clause referred to elsewhere by number can be found.
  * Word's own numbering is not in the HTML, so every list counts from one.
+ *
+ * A link's destination follows its text in parentheses when it is a web or
+ * mail address the text does not already show: an RFP that says "submit via
+ * the portal" has told the reader nothing without the address behind it.
  */
 const BLOCK_TAGS = new Set([
   "p", "h1", "h2", "h3", "h4", "h5", "h6", "li", "div", "blockquote", "pre",
@@ -108,6 +112,8 @@ export function htmlToText(html: string): string {
   const sinks: string[][] = [out];
   const tables: TableContext[] = [];
   const lists: { ordered: boolean; count: number }[] = [];
+  /** Open anchors: the destination and where its text began in the sink. */
+  const anchors: { href: string; sink: string[]; start: number }[] = [];
 
   const inCell = () => sinks.length > 1;
   const sink = () => sinks[sinks.length - 1];
@@ -178,6 +184,18 @@ export function htmlToText(html: string): string {
       const list = lists[lists.length - 1];
       if (list) list.count++;
       sink().push(list?.ordered ? `${listNumber(lists)} ` : "- ");
+    } else if (tag === "a") {
+      if (!closing) {
+        const href = decodeEntities(/\bhref="([^"]*)"/i.exec(attrs)?.[1] ?? "");
+        anchors.push({ href, sink: sink(), start: sink().length });
+      } else {
+        const a = anchors.pop();
+        if (a && /^(https?:\/\/|mailto:)/i.test(a.href)) {
+          const label = a.sink.slice(a.start).join("");
+          const shown = a.href.replace(/^mailto:/i, "");
+          if (!label.includes(shown)) a.sink.push(` (${shown})`);
+        }
+      }
     } else if (tag === "br") {
       newline();
     } else if (closing && BLOCK_TAGS.has(tag)) {
