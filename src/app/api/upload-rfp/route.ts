@@ -57,20 +57,20 @@ export async function POST(request: NextRequest) {
   const fileName = body.file_path as string;
 
   const claim = await claimUpload(supabase, fileName);
-  if (typeof claim !== "string") {
+  if (claim.state === "error") {
     console.error("Failed to claim upload:", claim.error);
     return NextResponse.json(
       { error: "Failed to start processing the file. Please try again." },
       { status: 500 }
     );
   }
-  if (claim === "completed") {
+  if (claim.state === "completed") {
     return NextResponse.json(
       { error: "That file has already been used to create an RFP." },
       { status: 409 }
     );
   }
-  if (claim === "busy") {
+  if (claim.state === "busy") {
     return NextResponse.json(
       {
         error:
@@ -82,7 +82,7 @@ export async function POST(request: NextRequest) {
 
   const abandon = async () => {
     await supabase.storage.from(BUCKET).remove([fileName]);
-    await releaseUpload(supabase, fileName);
+    await releaseUpload(supabase, fileName, claim.token);
   };
 
   const dl = await downloadDocument(supabase, fileName);
@@ -123,7 +123,7 @@ export async function POST(request: NextRequest) {
 
   if (rfpError || !rfp) {
     if (rfpError?.code === "23505") {
-      await completeUpload(supabase, fileName);
+      await completeUpload(supabase, fileName, claim.token);
       return NextResponse.json(
         { error: "That file has already been used to create an RFP." },
         { status: 409 }
@@ -151,7 +151,7 @@ export async function POST(request: NextRequest) {
     );
   }
 
-  await completeUpload(supabase, fileName);
+  await completeUpload(supabase, fileName, claim.token);
 
   // Log to audit trail
   await supabase.from("audit_log").insert({

@@ -31,8 +31,21 @@ export default function NewRfpPage() {
     setLoading(true);
     setError("");
 
-    // See the note on `orphan` in responses/page.tsx.
-    let orphan: string | null = null;
+    /** Ask the route to create the RFP from an object already in storage. */
+    const create = async (path: string) => {
+      const res = await fetch("/api/upload-rfp", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ file_path: path, title, description }),
+      });
+      const result = await readApiResponse<{ rfp_id: string }>(
+        res,
+        "Failed to upload"
+      );
+      if (!result.ok) throw new Error(result.error);
+      return result.data.rfp_id;
+    };
+
     try {
       // Straight to storage, then the path to the route; see
       // lib/storage-upload.ts for why the file no longer rides in the request.
@@ -40,48 +53,35 @@ export default function NewRfpPage() {
       if (!uploaded.ok) {
         throw new Error(uploaded.error);
       }
-      orphan = uploaded.path;
+      const path = uploaded.path;
 
-      const res = await fetch("/api/upload-rfp", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          file_path: uploaded.path,
-          title,
-          description,
-        }),
-      });
-
-      const result = await readApiResponse<{ rfp_id: string }>(
-        res,
-        "Failed to upload"
-      );
-      if (!result.ok) {
-        throw new Error(result.error);
-      }
-      orphan = null;
-      // Navigate to the rubric generation step
-      router.push(`/rfp/${result.data.rfp_id}/rubric?new=1`);
-    } catch (err) {
-      // See the note in responses/page.tsx: the row may exist even though
-      // the answer never arrived. If it does, carry on to it.
-      if (orphan) {
+      let rfpId: string;
+      try {
+        rfpId = await create(path);
+      } catch (first) {
+        // See the note in responses/page.tsx: the answer not arriving does
+        // not say what happened. Ask the tables.
         const outcome = await reconcileAfterFailure(
           supabase,
           { table: "rfps", column: "rfp_file_path" },
-          orphan
+          path
         );
         if (outcome.state === "referenced") {
-          router.push(`/rfp/${outcome.id}/rubric?new=1`);
-          return;
-        }
-        if (outcome.state === "processing" || outcome.state === "unknown") {
+          rfpId = outcome.id;
+        } else if (outcome.state === "stale") {
+          rfpId = await create(path);
+        } else if (outcome.state === "processing" || outcome.state === "unknown") {
           setError(
             "The upload is still being processed. Check the dashboard in a moment; if the RFP does not appear, upload it again."
           );
           return;
+        } else {
+          throw first;
         }
       }
+      // Navigate to the rubric generation step
+      router.push(`/rfp/${rfpId}/rubric?new=1`);
+    } catch (err) {
       setError(err instanceof Error ? err.message : "Something went wrong");
     } finally {
       setLoading(false);

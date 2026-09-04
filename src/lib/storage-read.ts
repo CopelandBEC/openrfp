@@ -113,31 +113,42 @@ export async function readOwnedDocument(
 /**
  * Take, complete or release the claim on a path. See the `upload_claims`
  * section of schema.sql for why claims are separate rows that callers cannot
- * mutate: the row in `responses` or `rfps` is deletable by its owner, and its
- * existence before parsing finished proved nothing.
+ * mutate without the token the claim was minted with — the route runs with
+ * the caller's own JWT, so the token is what separates the route from a
+ * caller reaching for the function directly.
  */
-export type ClaimOutcome = "claimed" | "busy" | "completed";
+export type Claim =
+  | { state: "claimed"; token: string }
+  | { state: "busy" }
+  | { state: "completed" }
+  | { state: "error"; error: string };
 
 export async function claimUpload(
   supabase: SupabaseClient,
   path: string
-): Promise<ClaimOutcome | { error: string }> {
+): Promise<Claim> {
   const { data, error } = await supabase.rpc("claim_upload", { p_path: path });
-  if (error) return { error: error.message };
-  if (data === "claimed" || data === "busy" || data === "completed") return data;
-  return { error: `unexpected claim state ${String(data)}` };
+  if (error) return { state: "error", error: error.message };
+  const d = data as { state?: unknown; token?: unknown } | null;
+  if (d?.state === "claimed" && typeof d.token === "string") {
+    return { state: "claimed", token: d.token };
+  }
+  if (d?.state === "busy" || d?.state === "completed") return { state: d.state };
+  return { state: "error", error: `unexpected claim state ${JSON.stringify(data)}` };
 }
 
 export async function completeUpload(
   supabase: SupabaseClient,
-  path: string
+  path: string,
+  token: string
 ): Promise<void> {
-  await supabase.rpc("complete_upload", { p_path: path });
+  await supabase.rpc("complete_upload", { p_path: path, p_token: token });
 }
 
 export async function releaseUpload(
   supabase: SupabaseClient,
-  path: string
+  path: string,
+  token: string
 ): Promise<void> {
-  await supabase.rpc("release_upload", { p_path: path });
+  await supabase.rpc("release_upload", { p_path: path, p_token: token });
 }

@@ -227,11 +227,38 @@ export default function ResponsesPage({
       setError("");
       setFileError("");
 
-      // Set once the object exists and cleared once a row references it, so
-      // that whatever fails in between — a refused request or one that never
-      // completes — the object is reclaimed rather than left with no row and,
-      // for a guest, occupying one of their capped slots.
-      let orphan: string | null = null;
+      const name = vendorName.trim();
+
+      /** Ask the route to attach an object already in storage. */
+      const attach = async (path: string) => {
+        const res = await fetch("/api/upload-response", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ file_path: path, vendor_name: name, rfp_id: id }),
+        });
+        const result = await readApiResponse<{
+          response_id: string;
+          file_path: string;
+          ocr_status?: "ok" | "flagged" | "unknown";
+          page_count?: number;
+        }>(res, "Failed to upload response");
+        if (!result.ok) throw new Error(result.error);
+        return result.data;
+      };
+
+      const adopt = (row: Response) => {
+        setResponses((prev) =>
+          prev.some((r) => r.id === row.id) ? prev : [...prev, row]
+        );
+        setVendorName("");
+        setFile(null);
+        // Reset the file input so the same file can be re-selected if needed
+        const fileInput = document.getElementById(
+          "file-input"
+        ) as HTMLInputElement | null;
+        if (fileInput) fileInput.value = "";
+      };
+
       try {
         // The PDF goes straight to storage from here; the route gets its
         // path. See lib/storage-upload.ts for why — the short version is that
@@ -241,65 +268,19 @@ export default function ResponsesPage({
         if (!uploaded.ok) {
           throw new Error(uploaded.error);
         }
-        orphan = uploaded.path;
+        const path = uploaded.path;
 
-        const res = await fetch("/api/upload-response", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            file_path: uploaded.path,
-            vendor_name: vendorName.trim(),
-            rfp_id: id,
-          }),
-        });
-
-        const result = await readApiResponse<{
-          response_id: string;
-          file_path: string;
-          ocr_status?: "ok" | "flagged" | "unknown";
-          page_count?: number;
-        }>(res, "Failed to upload response");
-
-        if (!result.ok) {
-          throw new Error(result.error);
-        }
-        // The row now references the object.
-        orphan = null;
-        const data = result.data;
-
-        const newResponse: Response = {
-          id: data.response_id,
-          rfp_id: id,
-          vendor_name: vendorName.trim(),
-          file_path: data.file_path,
-          extracted_text: null,
-          ocr_status: data.ocr_status || "unknown",
-          page_count: data.page_count || 0,
-          status: "pending",
-          created_at: new Date().toISOString(),
-        };
-
-        setResponses((prev) => [...prev, newResponse]);
-        setVendorName("");
-        setFile(null);
-
-        // Reset the file input so the same file can be re-selected if needed
-        const fileInput = document.getElementById(
-          "file-input"
-        ) as HTMLInputElement | null;
-        if (fileInput) fileInput.value = "";
-      } catch (err) {
-        // A failure after the upload is ambiguous: the route may have inserted
-        // the row and the connection dropped before the answer arrived. So
-        // ask the table before touching the object — if a row references it,
-        // the upload succeeded and the list gets the row; if not, the object
-        // is reclaimed. Removing an object the route already removed is
-        // harmless.
-        if (orphan) {
+        let data: Awaited<ReturnType<typeof attach>>;
+        try {
+          data = await attach(path);
+        } catch (first) {
+          // A failure after the upload is ambiguous: the route may have
+          // finished, may still be working, may have been killed, or may never
+          // have been reached. Ask the tables before deciding anything.
           const outcome = await reconcileAfterFailure(
             supabase,
             { table: "responses", column: "file_path" },
-            orphan
+            path
           );
           if (outcome.state === "referenced") {
             const { data: row } = await supabase
@@ -310,21 +291,38 @@ export default function ResponsesPage({
               .eq("id", outcome.id)
               .maybeSingle();
             if (row) {
-              setResponses((prev) =>
-                prev.some((r) => r.id === row.id) ? prev : [...prev, row as Response]
-              );
-              setVendorName("");
-              setFile(null);
+              adopt(row as Response);
               return;
             }
+            throw first;
           }
-          if (outcome.state === "processing" || outcome.state === "unknown") {
+          if (outcome.state === "stale") {
+            // A killed route left its claim behind. Posting the same path
+            // again takes the claim over and finishes the job; a fresh upload
+            // would leave this object and claim orphaned.
+            data = await attach(path);
+          } else if (outcome.state === "processing" || outcome.state === "unknown") {
             setError(
               "The upload is still being processed. Refresh in a moment to see it; if it does not appear, add it again."
             );
             return;
+          } else {
+            throw first;
           }
         }
+
+        adopt({
+          id: data.response_id,
+          rfp_id: id,
+          vendor_name: name,
+          file_path: data.file_path,
+          extracted_text: null,
+          ocr_status: data.ocr_status || "unknown",
+          page_count: data.page_count || 0,
+          status: "pending",
+          created_at: new Date().toISOString(),
+        });
+      } catch (err) {
         setError(
           err instanceof Error ? err.message : "Something went wrong during upload"
         );

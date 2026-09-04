@@ -208,31 +208,52 @@ create unique index if not exists rfps_rfp_file_path_key
 --
 -- So claims live here, and callers cannot touch this table directly: row-level
 -- security is on and the only write path is the functions below, which run as
--- the definer. A claim is taken before the download, marked complete after the
--- row is written, or released if anything fails. An in-flight claim older than
--- the routes' maximum duration can only be a function that was killed, so a
--- new request takes it over rather than being blocked for ever. The functions
--- also cap how many claims one user can have in flight, so one stored object
--- cannot be parsed many times at once by anyone.
+-- the definer. The routes run with the caller's own JWT, so the functions are
+-- callable by the caller too — which is why mutating a claim needs its token.
+-- `claim_upload` mints a token and returns it to whoever took the claim, which
+-- for a path in flight is the route; a second caller is told "busy" and gets
+-- no token, so it cannot release or complete a claim it does not hold. The
+-- browser may read its own claims (minus the token) to tell "still being
+-- processed" from "never reached the server".
+--
+-- A claim is taken before the download, marked complete after the row is
+-- written, or released if anything fails. An in-flight claim older than the
+-- routes' maximum duration can only be a function that was killed, so a new
+-- request takes it over rather than being blocked for ever. Each user is
+-- capped at a few claims in flight, and that count is taken under a per-user
+-- advisory lock so concurrent requests cannot all pass it at once.
 create table if not exists public.upload_claims (
   path text primary key,
   user_id uuid references auth.users on delete cascade not null,
   claimed_at timestamptz not null default now(),
-  completed_at timestamptz
+  completed_at timestamptz,
+  token uuid not null default gen_random_uuid()
 );
+alter table public.upload_claims
+  add column if not exists token uuid not null default gen_random_uuid();
 alter table public.upload_claims enable row level security;
--- Owners may see their own claims, so the browser can tell "still being
--- processed" from "never reached the server". Nothing else, directly.
 drop policy if exists "users read own upload claims" on public.upload_claims;
 create policy "users read own upload claims" on public.upload_claims
   for select using (user_id = (select auth.uid()));
+-- The policy says which rows; these say which columns. The token stays with
+-- the route that minted it.
+revoke all on table public.upload_claims from anon, authenticated;
+grant select (path, user_id, claimed_at, completed_at)
+  on public.upload_claims to authenticated;
 create index if not exists upload_claims_user_inflight
   on public.upload_claims (user_id, claimed_at) where completed_at is null;
 
--- Returns 'claimed', 'busy' (this path or too many others are in flight for
--- this user) or 'completed' (this path already produced a row).
+-- Signatures changed since the first version of these; drop before create.
+drop function if exists public.claim_upload(text);
+drop function if exists public.complete_upload(text);
+drop function if exists public.release_upload(text);
+
+-- Returns {"state": "claimed", "token": "..."} when the path is now the
+-- caller's to process; {"state": "busy"} when it is in flight or the caller
+-- has too many in flight; {"state": "completed"} when it already produced a
+-- row.
 create or replace function public.claim_upload(p_path text)
-returns text
+returns jsonb
 language plpgsql
 security definer
 set search_path = public
@@ -242,6 +263,7 @@ declare
   v_stale interval := interval '3 minutes';  -- > the routes' maxDuration
   v_max_inflight int := 3;
   v_existing public.upload_claims%rowtype;
+  v_token uuid;
 begin
   if v_user is null then
     raise exception 'not signed in' using errcode = '42501';
@@ -252,37 +274,39 @@ begin
     raise exception 'path is not the caller''s' using errcode = '42501';
   end if;
 
+  -- One claim decision at a time per user, so the in-flight count below is
+  -- taken against everything this user's other requests have already done.
+  perform pg_advisory_xact_lock(hashtext('upload_claims:' || v_user::text));
+
   select * into v_existing from public.upload_claims where path = p_path for update;
   if found then
     if v_existing.completed_at is not null then
-      return 'completed';
+      return jsonb_build_object('state', 'completed');
     end if;
     if v_existing.claimed_at > now() - v_stale then
-      return 'busy';
+      return jsonb_build_object('state', 'busy');
     end if;
-    -- Abandoned by a killed function: take it over.
+    -- Abandoned by a killed function: take it over with a fresh token.
+    v_token := gen_random_uuid();
     update public.upload_claims
-       set user_id = v_user, claimed_at = now()
+       set user_id = v_user, claimed_at = now(), token = v_token
      where path = p_path;
-    return 'claimed';
+    return jsonb_build_object('state', 'claimed', 'token', v_token);
   end if;
 
   if (select count(*) from public.upload_claims
         where user_id = v_user and completed_at is null
           and claimed_at > now() - v_stale) >= v_max_inflight then
-    return 'busy';
+    return jsonb_build_object('state', 'busy');
   end if;
 
-  insert into public.upload_claims (path, user_id) values (p_path, v_user);
-  return 'claimed';
-exception
-  when unique_violation then
-    -- Lost the race to insert the same path.
-    return 'busy';
+  v_token := gen_random_uuid();
+  insert into public.upload_claims (path, user_id, token) values (p_path, v_user, v_token);
+  return jsonb_build_object('state', 'claimed', 'token', v_token);
 end;
 $$;
 
-create or replace function public.complete_upload(p_path text)
+create or replace function public.complete_upload(p_path text, p_token uuid)
 returns void
 language sql
 security definer
@@ -290,25 +314,25 @@ set search_path = public
 as $$
   update public.upload_claims
      set completed_at = now()
-   where path = p_path and user_id = auth.uid();
+   where path = p_path and token = p_token and completed_at is null;
 $$;
 
-create or replace function public.release_upload(p_path text)
+create or replace function public.release_upload(p_path text, p_token uuid)
 returns void
 language sql
 security definer
 set search_path = public
 as $$
   delete from public.upload_claims
-   where path = p_path and user_id = auth.uid() and completed_at is null;
+   where path = p_path and token = p_token and completed_at is null;
 $$;
 
 revoke all on function public.claim_upload(text) from public;
-revoke all on function public.complete_upload(text) from public;
-revoke all on function public.release_upload(text) from public;
+revoke all on function public.complete_upload(text, uuid) from public;
+revoke all on function public.release_upload(text, uuid) from public;
 grant execute on function public.claim_upload(text) to authenticated;
-grant execute on function public.complete_upload(text) to authenticated;
-grant execute on function public.release_upload(text) to authenticated;
+grant execute on function public.complete_upload(text, uuid) to authenticated;
+grant execute on function public.release_upload(text, uuid) to authenticated;
 
 -- ============================================
 -- Audit Log

@@ -98,8 +98,13 @@ export async function discardDocument(
 export type Reconciliation =
   | { state: "referenced"; id: string }
   | { state: "processing" }
+  /** A claim older than a route could still be running: retry the same path. */
+  | { state: "stale" }
   | { state: "reclaimed" }
   | { state: "unknown" };
+
+/** Matches `v_stale` in `claim_upload`; a route cannot run this long. */
+export const CLAIM_STALE_MS = 3 * 60 * 1000;
 
 export async function reconcileAfterFailure(
   supabase: SupabaseClient,
@@ -116,11 +121,20 @@ export async function reconcileAfterFailure(
 
   const claim = await supabase
     .from("upload_claims")
-    .select("completed_at")
+    .select("claimed_at, completed_at")
     .eq("path", path)
     .maybeSingle();
   if (claim.error) return { state: "unknown" };
-  if (claim.data) return { state: "processing" };
+  if (claim.data) {
+    const claimedAt = Date.parse(String(claim.data.claimed_at));
+    // A claim this old with no row was left by a killed function. Posting the
+    // same path again takes it over and finishes the job; a fresh upload
+    // would leave this object and claim behind for good.
+    if (Number.isFinite(claimedAt) && Date.now() - claimedAt > CLAIM_STALE_MS) {
+      return { state: "stale" };
+    }
+    return { state: "processing" };
+  }
 
   await discardDocument(supabase, path);
   return { state: "reclaimed" };
