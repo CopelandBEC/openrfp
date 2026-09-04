@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { createClient } from "@/lib/supabase/server";
 import {
   UnsupportedDocumentError,
-  ZipTooLargeError,
+  DocumentTooLargeError,
   extractDocumentText,
 } from "@/lib/documents/extract-text";
 import { isGuest } from "@/lib/auth/guest";
@@ -151,7 +151,7 @@ export async function POST(request: NextRequest) {
         { status: 400 }
       );
     }
-    if (err instanceof ZipTooLargeError) {
+    if (err instanceof DocumentTooLargeError) {
       // Deliberate or not, a file that inflates this far is not one this
       // route can hold. Logged, since a real proposal never trips it.
       console.error("Refused oversized document:", err.message);

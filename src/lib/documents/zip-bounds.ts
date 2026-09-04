@@ -21,7 +21,15 @@ export const MAX_ZIP_ENTRIES = 5_000;
 export const MAX_ENTRY_BYTES = 64 * 1024 * 1024;
 export const MAX_EXPANDED_BYTES = 256 * 1024 * 1024;
 
-export class ZipTooLargeError extends Error {
+/** A document that would take more than one request can hold, however so. */
+export class DocumentTooLargeError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "DocumentTooLargeError";
+  }
+}
+
+export class ZipTooLargeError extends DocumentTooLargeError {
   constructor(detail: string) {
     super(`Zip expands beyond the limit: ${detail}`);
     this.name = "ZipTooLargeError";

@@ -1,6 +1,6 @@
 import JSZip from "jszip";
 import mammoth from "mammoth";
-import { assertZipWithinBounds } from "@/lib/documents/zip-bounds";
+import { DocumentTooLargeError, assertZipWithinBounds } from "@/lib/documents/zip-bounds";
 
 export interface DocxExtractionResult {
   text: string;
@@ -88,7 +88,20 @@ async function readPageCount(buffer: Buffer): Promise<number> {
  * A link's destination follows its text in parentheses when it is a web or
  * mail address the text does not already show: an RFP that says "submit via
  * the portal" has told the reader nothing without the address behind it.
+ *
+ * Repeating a spanning cell into every row it covers is an amplifier: a cell
+ * spanning a hundred rows is written a hundred times, and a nested table
+ * inside it is written a hundred times over again, so a few kilobytes of
+ * markup can ask for gigabytes of text. The zip caps bound the archive, not
+ * this, so every character written here is counted against a budget and the
+ * walk gives up — as "too large", the same answer a zip bomb gets — when it
+ * is spent. Nesting is capped too; nothing legitimate nests tables eight
+ * deep.
  */
+/** Well above any real proposal (a thousand pages is a few million). */
+export const MAX_TEXT_CHARS = 10_000_000;
+const MAX_TABLE_DEPTH = 8;
+
 const BLOCK_TAGS = new Set([
   "p", "h1", "h2", "h3", "h4", "h5", "h6", "li", "div", "blockquote", "pre",
 ]);
@@ -115,6 +128,20 @@ export function htmlToText(html: string): string {
   /** Open anchors: the destination and where its text began in the sink. */
   const anchors: { href: string; sink: string[]; start: number }[] = [];
 
+  let written = 0;
+  const charge = (chars: number) => {
+    written += chars;
+    if (written > MAX_TEXT_CHARS) {
+      throw new DocumentTooLargeError(
+        `Document renders to more than ${MAX_TEXT_CHARS} characters of text`
+      );
+    }
+  };
+  const emit = (target: string[], text: string) => {
+    charge(text.length);
+    target.push(text);
+  };
+
   const inCell = () => sinks.length > 1;
   const sink = () => sinks[sinks.length - 1];
   const newline = () => {
@@ -129,7 +156,7 @@ export function htmlToText(html: string): string {
   for (const m of html.matchAll(/<(\/?)([a-zA-Z][a-zA-Z0-9]*)\b([^>]*)>|[^<]+/g)) {
     if (m[2] === undefined) {
       const text = decodeEntities(m[0]);
-      sink().push(inCell() ? text.replace(/\s+/g, " ") : text);
+      emit(sink(), inCell() ? text.replace(/\s+/g, " ") : text);
       continue;
     }
     const closing = m[1] === "/";
@@ -139,6 +166,11 @@ export function htmlToText(html: string): string {
     if (tag === "table") {
       if (!closing) {
         newline();
+        if (tables.length >= MAX_TABLE_DEPTH) {
+          throw new DocumentTooLargeError(
+            `Tables nested more than ${MAX_TABLE_DEPTH} deep`
+          );
+        }
         tables.push({ rows: [], carry: new Map(), row: null });
       } else {
         const table = tables.pop();
@@ -147,6 +179,8 @@ export function htmlToText(html: string): string {
           const text = table.rows
             .map((cols) => cols.join(nested ? " / " : " | "))
             .join(nested ? "; " : "\n");
+          // Its characters were charged as they were produced; this is the
+          // same text changing hands, so it is pushed rather than emitted.
           sink().push(nested ? ` ${text} ` : `${text}\n\n`);
         }
       }
@@ -156,7 +190,7 @@ export function htmlToText(html: string): string {
       if (!closing) {
         table.row = [];
       } else if (table.row) {
-        table.rows.push(renderRow(table, table.row));
+        table.rows.push(renderRow(table, table.row, charge));
         table.row = null;
       }
     } else if (tag === "td" || tag === "th") {
@@ -183,7 +217,7 @@ export function htmlToText(html: string): string {
     } else if (tag === "li" && !closing) {
       const list = lists[lists.length - 1];
       if (list) list.count++;
-      sink().push(list?.ordered ? `${listNumber(lists)} ` : "- ");
+      emit(sink(), list?.ordered ? `${listNumber(lists)} ` : "- ");
     } else if (tag === "a") {
       if (!closing) {
         const href = decodeEntities(/\bhref="([^"]*)"/i.exec(attrs)?.[1] ?? "");
@@ -193,7 +227,7 @@ export function htmlToText(html: string): string {
         if (a && /^(https?:\/\/|mailto:)/i.test(a.href)) {
           const label = a.sink.slice(a.start).join("");
           const shown = a.href.replace(/^mailto:/i, "");
-          if (!label.includes(shown)) a.sink.push(` (${shown})`);
+          if (!label.includes(shown)) emit(a.sink, ` (${shown})`);
         }
       }
     } else if (tag === "br") {
@@ -231,14 +265,20 @@ function spanAttribute(attrs: string, name: string): number {
 /**
  * Lay the row's cells onto grid columns, filling any column still covered by
  * a cell above with that cell's text, and padding a spanning cell with empty
- * columns so that everything after it stays aligned.
+ * columns so that everything after it stays aligned. Every repeat of a
+ * carried cell is new text, and is charged to the budget as such.
  */
-function renderRow(table: TableContext, cells: CellBuffer[]): string[] {
+function renderRow(
+  table: TableContext,
+  cells: CellBuffer[],
+  charge: (chars: number) => void
+): string[] {
   const cols: string[] = [];
   let col = 0;
   const takeCarry = () => {
     const c = table.carry.get(col);
     if (!c) return false;
+    charge(c.text.length);
     cols.push(c.text);
     if (--c.remaining <= 0) table.carry.delete(col);
     col++;
