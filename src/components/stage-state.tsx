@@ -5,27 +5,15 @@ import { useEffect, useState } from "react"
 import { cn } from "@/lib/utils"
 
 /**
- * The wait.
+ * The wait, and how long it has been going.
  *
- * A model call here runs for tens of seconds, and the old screens spent that
- * time showing a bare spinner — the longest, least reassuring moment in the
- * app. This shows two true things instead: a real elapsed count, and a
- * rotating description of what the request actually involves. Nothing here
- * fakes a percentage or ticks off steps as "done": we have no progress signal
- * from the provider, and inventing one would be a lie that the user catches
- * the first time it stalls at 80%.
+ * No progress signal comes back from the provider, so there is nothing honest
+ * to put a percentage on. What we can say truthfully is how long it has been
+ * running, and what the request actually involves — so that is what these
+ * share. `useWaitCommentary` holds both: a real elapsed count, and a line of
+ * commentary rotated every few seconds.
  */
-export function WorkingState({
-  title,
-  notes,
-  expected,
-}: {
-  title: string
-  /** True statements about the work, rotated every few seconds. */
-  notes: string[]
-  /** Honest range, e.g. "15–60 seconds". */
-  expected?: string
-}) {
+function useWaitCommentary(notes: string[]) {
   const [elapsed, setElapsed] = useState(0)
 
   useEffect(() => {
@@ -38,14 +26,52 @@ export function WorkingState({
   }, [])
 
   const note = notes.length ? notes[Math.floor(elapsed / 5) % notes.length] : ""
+  return { elapsed, note }
+}
+
+/** Indeterminate, and shaped like one: a travelling sliver, not a fill that
+    would imply a known fraction. */
+function WorkingBar({ className }: { className?: string }) {
+  return (
+    <div
+      className={cn(
+        "h-1 overflow-hidden rounded-r-[4px] bg-viz-track",
+        className
+      )}
+    >
+      <div className="h-full w-1/3 animate-[working_1.4s_ease-in-out_infinite] rounded-r-[4px] bg-viz-mark motion-reduce:w-full motion-reduce:animate-none" />
+    </div>
+  )
+}
+
+/**
+ * The wait, when it is the whole screen.
+ *
+ * A model call here runs for tens of seconds to a couple of minutes, and the
+ * old screens spent that time showing a bare spinner — the longest, least
+ * reassuring moment in the app. Nothing here fakes a percentage or ticks off
+ * steps as "done": inventing one would be a lie that the user catches the
+ * first time it stalls at 80%.
+ */
+export function WorkingState({
+  title,
+  notes,
+  expected,
+  reassurance,
+}: {
+  title: string
+  /** True statements about the work, rotated every few seconds. */
+  notes: string[]
+  /** Honest range, e.g. "a couple of minutes". */
+  expected?: string
+  /** One line of encouragement for the waits long enough to need it. */
+  reassurance?: string
+}) {
+  const { elapsed, note } = useWaitCommentary(notes)
 
   return (
     <div className="mx-auto flex max-w-md flex-col items-center px-4 py-16 text-center">
-      {/* Indeterminate, and shaped like one: a travelling sliver, not a fill
-          that would imply a known fraction. */}
-      <div className="h-1 w-full max-w-56 overflow-hidden rounded-r-[4px] bg-viz-track">
-        <div className="h-full w-1/3 animate-[working_1.4s_ease-in-out_infinite] rounded-r-[4px] bg-viz-mark motion-reduce:w-full motion-reduce:animate-none" />
-      </div>
+      <WorkingBar className="w-full max-w-56" />
 
       <h2 className="mt-6 text-lg font-semibold text-foreground">{title}</h2>
 
@@ -60,6 +86,48 @@ export function WorkingState({
       <p className="mt-1 text-xs text-muted-foreground/80">
         {elapsed}s elapsed
         {expected ? ` · usually ${expected}` : ""}
+      </p>
+
+      {reassurance && (
+        <p className="mt-3 text-sm font-medium text-foreground">{reassurance}</p>
+      )}
+    </div>
+  )
+}
+
+/**
+ * The same wait, sized for a corner of a screen that stays useful.
+ *
+ * The proposals screen keeps its list and per-row status visible while scoring
+ * runs, so the wait cannot take the page over — but it was reduced to one
+ * static line of grey text, which reads as a stall. This is the full-screen
+ * treatment folded into that space: the same travelling sliver, the same
+ * rotating commentary, the same honest clock.
+ */
+export function WorkingInline({
+  notes,
+  status,
+  className,
+}: {
+  notes: string[]
+  status?: string
+  className?: string
+}) {
+  const { elapsed, note } = useWaitCommentary(notes)
+
+  return (
+    <div className={cn("min-w-0", className)}>
+      <WorkingBar className="w-32" />
+      <p
+        key={note}
+        className="animate-reveal mt-2 text-xs font-medium text-foreground"
+        aria-live="polite"
+      >
+        {note}
+      </p>
+      <p className="mt-0.5 text-xs text-muted-foreground/80">
+        {status ? `${status} · ` : ""}
+        {elapsed}s elapsed
       </p>
     </div>
   )

@@ -15,7 +15,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { AppHeader, PageIntro } from "@/components/app-shell";
-import { EmptyState, ErrorState } from "@/components/stage-state";
+import { EmptyState, ErrorState, WorkingInline } from "@/components/stage-state";
 import { scoredAgainstCurrentRubric } from "@/lib/stage";
 import { readApiResponse } from "@/lib/api-response";
 import {
@@ -62,6 +62,22 @@ const ALLOWED_MIME_TYPES = ["application/pdf"];
  * to the owner who clicks the button once.
  */
 const EVALUATION_CONCURRENCY = 3;
+
+/**
+ * What to say during the scoring wait.
+ *
+ * Same reasoning as the rubric screen: several model calls run back to back
+ * here and there is no progress signal to report, so the screen says true
+ * things about the work instead of sitting on one static line. Every one of
+ * these describes something the evaluation prompt actually asks for.
+ */
+const SCORING_NOTES = [
+  "Reading each proposal against every criterion.",
+  "Quoting the passage behind each score, so you can check it.",
+  "Holding the line on scoring — 3 out of 5 means adequate, not good.",
+  "Noting where a proposal is thin, and where it is strong.",
+  "Writing the summary a committee could read.",
+];
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -542,8 +558,10 @@ export default function ResponsesPage({
     let errorCount = 0;
     let finished = 0;
 
+    // Reads beside the elapsed clock in the sticky bar, so no trailing
+    // ellipsis: the travelling bar next to it already says "still going".
     setEvalProgress(
-      `Evaluating ${toEvaluate.length} response${toEvaluate.length === 1 ? "" : "s"}...`
+      `Scoring ${toEvaluate.length} proposal${toEvaluate.length === 1 ? "" : "s"}`
     );
 
     const evaluateOne = async (response: (typeof toEvaluate)[number]) => {
@@ -599,7 +617,7 @@ export default function ResponsesPage({
       }
 
       finished++;
-      setEvalProgress(`Evaluated ${finished} of ${toEvaluate.length}...`);
+      setEvalProgress(`${finished} of ${toEvaluate.length} scored`);
     };
 
     // Evaluations are independent of one another, so run several at once: done
@@ -879,16 +897,24 @@ export default function ResponsesPage({
              * ----------------------------------------------------------- */}
             <div className="sticky bottom-0 -mx-4 mt-10 border-t border-border/70 bg-background/90 px-4 py-3 backdrop-blur-sm">
               <div className="flex flex-wrap items-center justify-between gap-3">
-                <p className="text-xs text-muted-foreground">
-                  {evaluating
-                    ? evalProgress ||
-                      `Scoring up to ${EVALUATION_CONCURRENCY} at a time…`
-                    : allEvaluated
+                {evaluating ? (
+                  <WorkingInline
+                    className="flex-1"
+                    notes={SCORING_NOTES}
+                    status={
+                      evalProgress ||
+                      `Scoring up to ${EVALUATION_CONCURRENCY} at a time`
+                    }
+                  />
+                ) : (
+                  <p className="text-xs text-muted-foreground">
+                    {allEvaluated
                       ? "Every proposal is scored."
                       : needsRescoring.length > 0
                         ? `${toScore.length} to score against the current rubric.`
                         : `${pendingOrErrorResponses.length} waiting to be scored.`}
-                </p>
+                  </p>
+                )}
                 {allEvaluated && !evaluating ? (
                   <Button
                     size="lg"
