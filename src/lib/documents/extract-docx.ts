@@ -27,6 +27,13 @@ export interface DocxExtractionResult {
  * The archive is measured before anything inflates it in earnest; see
  * zip-bounds.ts. Its errors propagate: the route maps a too-large archive to
  * its own message and anything else to "could not be read".
+ *
+ * mammoth's parsed tree is measured too, before it is serialised. The tree
+ * is cheap — a thousand hyperlinks to one relationship share one string —
+ * but the HTML is not: the target is written out once per link, so a
+ * kilobyte of markup pointing a thousand links at a megabyte-long target
+ * asks for a gigabyte of HTML before `htmlToText` and its budget get a look.
+ * The transform hook runs between the two, and refuses first.
  */
 export async function extractDocxText(
   data: Uint8Array
@@ -39,6 +46,10 @@ export async function extractDocxText(
       { buffer },
       {
         convertImage: mammoth.images.imgElement(async () => ({ src: "" })),
+        transformDocument: (document) => {
+          assertTreeWithinBudget(document);
+          return document;
+        },
       }
     ),
     readPageCount(buffer),
@@ -244,6 +255,44 @@ export function htmlToText(html: string): string {
     .join("\n")
     .replace(/\n{3,}/g, "\n\n")
     .trim();
+}
+
+/**
+ * Sum what the HTML serialiser will write for the tree — text, and the
+ * destination of every link, once per link — and refuse past the budget.
+ * Notes and comments are included because mammoth appends them to the
+ * document. Iterative, so a deep tree cannot overflow the stack.
+ */
+function assertTreeWithinBudget(document: unknown): void {
+  interface Node {
+    type?: string;
+    children?: Node[];
+    body?: Node[];
+    value?: string;
+    href?: string;
+    anchor?: string;
+    notes?: { _notes?: Record<string, Node> };
+    comments?: Node[];
+  }
+  const root = document as Node;
+  const stack: Node[] = [root];
+  for (const note of Object.values(root.notes?._notes ?? {})) stack.push(note);
+  for (const comment of root.comments ?? []) stack.push(comment);
+
+  let chars = 0;
+  while (stack.length > 0) {
+    const node = stack.pop()!;
+    if (typeof node.value === "string") chars += node.value.length;
+    if (typeof node.href === "string") chars += node.href.length;
+    if (typeof node.anchor === "string") chars += node.anchor.length;
+    if (chars > MAX_TEXT_CHARS) {
+      throw new DocumentTooLargeError(
+        `Document holds more than ${MAX_TEXT_CHARS} characters of text and link targets`
+      );
+    }
+    if (Array.isArray(node.children)) stack.push(...node.children);
+    if (Array.isArray(node.body)) stack.push(...node.body);
+  }
 }
 
 /** "2.1." for the second top-level item's first sub-item. */
