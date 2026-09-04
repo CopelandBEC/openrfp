@@ -140,7 +140,7 @@ export async function POST(request: NextRequest) {
   if (rfpError || !rfp) {
     // See upload-response: the insert may have committed and its answer been
     // lost. Ask by path before treating the object as unreferenced.
-    const { data: committed } = await supabase
+    const { data: committed, error: lookupError } = await supabase
       .from("rfps")
       .select("id")
       .eq("rfp_file_path", fileName)
@@ -153,6 +153,14 @@ export async function POST(request: NextRequest) {
         page_count: pageCount,
         message: "RFP uploaded successfully",
       });
+    }
+    if (lookupError) {
+      // See upload-response: unknown is not "absent". Leave object and claim.
+      console.error("Could not confirm RFP insert:", lookupError.message);
+      return NextResponse.json(
+        { error: "The database did not answer. The upload will be settled on your next attempt." },
+        { status: 503 }
+      );
     }
     await abandon();
 

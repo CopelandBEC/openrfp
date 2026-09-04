@@ -194,18 +194,21 @@ update public.evaluations e
 -- a populated deployment could hold duplicates that would make the index
 -- build fail and abort this whole run. Writes are locked out for the rest of
 -- the transaction, duplicates beyond the oldest are given a distinguishing
--- suffix rather than deleted, and only then are the indexes built.
+-- suffix rather than deleted, and only then are the indexes built. The suffix
+-- carries a value generated here and now, because the columns are writable
+-- through the API and a predictable suffix could itself be planted ahead of
+-- the run to make the rewrite collide.
 lock table public.responses in share row exclusive mode;
 lock table public.rfps in share row exclusive mode;
 update public.responses r
-   set file_path = r.file_path || '#duplicate-' || r.id
+   set file_path = r.file_path || '#duplicate-' || gen_random_uuid()
   from (
     select id, row_number() over (partition by file_path order by created_at, id) as n
       from public.responses
   ) d
  where d.id = r.id and d.n > 1;
 update public.rfps r
-   set rfp_file_path = r.rfp_file_path || '#duplicate-' || r.id
+   set rfp_file_path = r.rfp_file_path || '#duplicate-' || gen_random_uuid()
   from (
     select id, row_number() over (partition by rfp_file_path order by created_at, id) as n
       from public.rfps where rfp_file_path is not null
@@ -1176,16 +1179,19 @@ begin
   end if;
 
   -- A claim is for an object that exists. Nothing to claim otherwise, and no
-  -- row to leave behind for a path someone typed. An in-flight claim for a
-  -- path whose object is gone is one a route removed the object for and was
-  -- then killed before it could release; it goes here, so the browser's retry
-  -- finds nothing and stops instead of seeing a stale claim until the sweep.
+  -- row to leave behind for a path someone typed. A *stale* in-flight claim
+  -- for a path whose object is gone is one a route removed the object for and
+  -- was then killed before it could release; it goes here, so the browser's
+  -- retry finds nothing and stops. A fresh one stays: its route may have the
+  -- bytes in hand and the object deleted from under it, and clearing it here
+  -- would let its owner free an in-flight slot at will.
   if not exists (
     select 1 from storage.objects
      where bucket_id = 'rfp-files' and name = p_path
   ) then
     delete from public.upload_claims
-     where path = p_path and user_id = v_user and completed_at is null;
+     where path = p_path and user_id = v_user and completed_at is null
+       and claimed_at <= now() - v_stale;
     return jsonb_build_object('state', 'missing');
   end if;
 

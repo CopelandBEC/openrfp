@@ -164,7 +164,7 @@ export async function POST(request: NextRequest) {
     // commit and its answer be lost on the way back. Before treating the
     // object as unreferenced, ask by path — the unique index makes that
     // exact — and if the row is there, this upload succeeded.
-    const { data: committed } = await supabase
+    const { data: committed, error: lookupError } = await supabase
       .from("responses")
       .select("id")
       .eq("file_path", fileName)
@@ -178,6 +178,16 @@ export async function POST(request: NextRequest) {
         page_count: pageCount,
         message: "Response uploaded successfully",
       });
+    }
+    if (lookupError) {
+      // Could not ask, so nothing is known — the same outage that lost the
+      // insert's answer. The object and the claim stay; the claim goes stale
+      // and the browser's retry settles it once the database is reachable.
+      console.error("Could not confirm response insert:", lookupError.message);
+      return NextResponse.json(
+        { error: "The database did not answer. The upload will be settled on your next attempt." },
+        { status: 503 }
+      );
     }
     await abandon();
 
