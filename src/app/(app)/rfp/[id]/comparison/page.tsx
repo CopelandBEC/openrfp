@@ -38,6 +38,7 @@ import {
   scoredAgainstCurrentRubric,
 } from "@/lib/stage";
 import { modelLabel } from "@/lib/ai/model-label";
+import { readApiResponse } from "@/lib/api-response";
 import {
   exportCsv,
   exportJson,
@@ -254,8 +255,8 @@ export default function ComparisonPage({
       });
 
       if (!res.ok) {
-        const body = await res.json().catch(() => ({}));
-        throw new Error(body.error || `HTTP ${res.status}`);
+        const result = await readApiResponse(res, "Failed to rank");
+        throw new Error(result.ok ? "Failed to rank" : result.error);
       }
 
       await fetchData();

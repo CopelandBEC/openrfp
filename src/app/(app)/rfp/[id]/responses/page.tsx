@@ -17,6 +17,8 @@ import { Label } from "@/components/ui/label";
 import { AppHeader, PageIntro } from "@/components/app-shell";
 import { EmptyState, ErrorState } from "@/components/stage-state";
 import { scoredAgainstCurrentRubric } from "@/lib/stage";
+import { readApiResponse } from "@/lib/api-response";
+import { discardDocument, uploadDocument } from "@/lib/storage-upload";
 import { cn } from "@/lib/utils";
 
 // ---------------------------------------------------------------------------
@@ -225,22 +227,40 @@ export default function ResponsesPage({
       setError("");
       setFileError("");
 
-      const formData = new FormData();
-      formData.append("file", file);
-      formData.append("vendor_name", vendorName.trim());
-      formData.append("rfp_id", id);
-
       try {
+        // The PDF goes straight to storage from here; the route gets its
+        // path. See lib/storage-upload.ts for why — the short version is that
+        // the hosting platform stops request bodies at 4.5 MB, before the
+        // route runs, and proposals with drawings in them are bigger.
+        const uploaded = await uploadDocument(supabase, file, id);
+        if (!uploaded.ok) {
+          throw new Error(uploaded.error);
+        }
+
         const res = await fetch("/api/upload-response", {
           method: "POST",
-          body: formData,
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            file_path: uploaded.path,
+            vendor_name: vendorName.trim(),
+            rfp_id: id,
+          }),
         });
 
-        const data = await res.json();
+        const result = await readApiResponse<{
+          response_id: string;
+          file_path: string;
+          ocr_status?: "ok" | "flagged" | "unknown";
+          page_count?: number;
+        }>(res, "Failed to upload response");
 
-        if (!res.ok) {
-          throw new Error(data.error || "Failed to upload response");
+        if (!result.ok) {
+          // The route removes the object when it fails after reading it; if
+          // the request never got that far, nothing else will.
+          await discardDocument(supabase, uploaded.path);
+          throw new Error(result.error);
         }
+        const data = result.data;
 
         const newResponse: Response = {
           id: data.response_id,
@@ -271,7 +291,7 @@ export default function ResponsesPage({
         setUploading(false);
       }
     },
-    [file, vendorName, id]
+    [file, vendorName, id, supabase]
   );
 
   // -----------------------------------------------------------------------
@@ -398,9 +418,12 @@ export default function ResponsesPage({
         });
 
         if (!res.ok) {
-          const data = await res.json();
+          const result = await readApiResponse(
+            res,
+            `Failed to evaluate ${response.vendor_name}`
+          );
           throw new Error(
-            data.error || `Failed to evaluate ${response.vendor_name}`
+            result.ok ? `Failed to evaluate ${response.vendor_name}` : result.error
           );
         }
 

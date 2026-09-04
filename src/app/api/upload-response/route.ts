@@ -2,11 +2,23 @@ import { NextRequest, NextResponse } from "next/server";
 import { createClient } from "@/lib/supabase/server";
 import { extractPdfText } from "@/lib/pdf/extract-text";
 import { isGuest } from "@/lib/auth/guest";
-import { isStorageDenied } from "@/lib/storage-errors";
+import { readOwnedDocument } from "@/lib/storage-read";
+import { BUCKET } from "@/lib/storage-upload";
 
-// Parsing a large PDF can outrun the platform default.
-export const maxDuration = 60;
+// Parsing a large PDF can outrun the platform default, and the file now
+// arrives from storage rather than in the request, so the 25 MB the app
+// promises actually reaches this code.
+export const maxDuration = 120;
 
+/**
+ * Attach an uploaded proposal to an RFP.
+ *
+ * The browser has already put the PDF in storage — see lib/storage-upload.ts
+ * for why the file no longer travels in this request — and sends its path.
+ * This reads it back, extracts the text, and creates the row. If anything
+ * after the read fails, the object is removed rather than left with no row
+ * referencing it and, for a guest, occupying one of their capped slots.
+ */
 export async function POST(request: NextRequest) {
   const supabase = await createClient();
   const {
@@ -17,73 +29,35 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 
-  const formData = await request.formData();
-  const file = formData.get("file") as File;
-  const vendorName = formData.get("vendor_name") as string;
-  const rfpId = formData.get("rfp_id") as string;
+  const body = (await request.json().catch(() => null)) as {
+    file_path?: unknown;
+    vendor_name?: unknown;
+    rfp_id?: unknown;
+  } | null;
+  const filePath = body?.file_path;
+  const vendorName =
+    typeof body?.vendor_name === "string" ? body.vendor_name.trim() : "";
+  const rfpId = typeof body?.rfp_id === "string" ? body.rfp_id : "";
 
-  if (!file || !vendorName || !rfpId) {
+  if (!filePath || !vendorName || !rfpId) {
     return NextResponse.json(
       { error: "File, vendor name, and RFP ID are required" },
       { status: 400 }
     );
   }
 
-  // Validate file size
-  if (file.size > 25 * 1024 * 1024) {
-    return NextResponse.json(
-      { error: "File too large. Maximum 25MB." },
-      { status: 400 }
-    );
+  const read = await readOwnedDocument(supabase, user, filePath, rfpId);
+  if (!read.ok) {
+    return NextResponse.json({ error: read.error }, { status: read.status });
   }
-
-  // Validate file type. DOCX is deliberately rejected rather than accepted:
-  // extraction below is PDF-only, so a DOCX upload used to succeed, store an
-  // empty rfp_text, and then fail a step later with a misleading "needs OCR"
-  // message. Native DOCX parsing is a roadmap item (SPEC section 13).
-  if (file.type !== "application/pdf") {
-    return NextResponse.json(
-      {
-        error:
-          "Only PDF files are supported right now. If you have a Word " +
-          "document, export it to PDF and upload that.",
-      },
-      { status: 400 }
-    );
-  }
-
-  // Upload to storage
-  const fileName = `${user.id}/${rfpId}/${Date.now()}-${file.name}`;
-  const { error: uploadError } = await supabase.storage
-    .from("rfp-files")
-    .upload(fileName, file);
-
-  if (uploadError) {
-    // A guest at their file cap is refused by the storage insert policy. That
-    // is a limit, not a fault, and it deserves an explanation.
-    if (isGuest(user) && isStorageDenied(uploadError)) {
-      return NextResponse.json(
-        {
-          error:
-            "Guest sessions are limited to a few uploaded files. Save your " +
-            "work to an account from the banner above to keep going.",
-        },
-        { status: 403 }
-      );
-    }
-    console.error("Failed to upload response file:", uploadError.message);
-    return NextResponse.json(
-      { error: "Failed to upload file" },
-      { status: 500 }
-    );
-  }
+  const fileName = filePath as string;
 
   // Extract text and flag PDFs that appear to lack an OCR layer
   const {
     text: extractedText,
     pageCount,
     likelyScanned,
-  } = await extractPdfText(new Uint8Array(await file.arrayBuffer()));
+  } = await extractPdfText(read.bytes);
   const ocrStatus = likelyScanned ? "flagged" : "ok";
 
   // Create response record
@@ -102,10 +76,7 @@ export async function POST(request: NextRequest) {
     .single();
 
   if (responseError) {
-    // The file is already in storage, and for a guest it now occupies one of
-    // their capped slots. Remove it rather than leave an object no row will
-    // ever reference and no UI can delete.
-    await supabase.storage.from("rfp-files").remove([fileName]);
+    await supabase.storage.from(BUCKET).remove([fileName]);
 
     // A guest at their response cap trips the row-level security check on
     // insert. That is a limit, not a fault.
@@ -132,7 +103,12 @@ export async function POST(request: NextRequest) {
     rfp_id: rfpId,
     user_id: user.id,
     action: "upload_response",
-    details: { vendor_name: vendorName, file_name: file.name, ocr_status: ocrStatus },
+    details: {
+      vendor_name: vendorName,
+      file_name: read.fileName,
+      size_bytes: read.size,
+      ocr_status: ocrStatus,
+    },
   });
 
   return NextResponse.json({

@@ -331,6 +331,25 @@ Two things beyond model choice matter as much:
   to withhold it. Reordering the prompt or changing the reasoning effort
   invalidates the cached prefix.
 
+## Uploads
+
+Documents go from the browser straight into the `rfp-files` storage bucket, and
+the API routes receive only the object's path, which they read back server-side
+before extracting text. They used to travel inside the API request, and the
+hosting platform stops any request body at 4.5 MB before the route runs — so a
+proposal with drawings in it failed with a platform error page the client could
+not parse, while the app promised 25 MB. Storage has no such cap, the bucket's
+policies already scope each owner to their own folder, and outbound reads inside
+a function are not limited. The path layout is unchanged:
+`<user id>/<rfp id>/<timestamp>-<name>` for a proposal and
+`<user id>/<timestamp>-<name>` for an RFP. The bucket itself enforces the 25 MB
+and PDF-only limits, so the browser-side checks are a courtesy, not the guard.
+
+Every API call in the client reads its response through `readApiResponse`,
+which parses JSON only when the body is JSON and otherwise says what the status
+means. A platform 413, 504 or 500 used to surface as
+"JSON.parse: unexpected character at line 1 column 1".
+
 ## Interface conventions
 
 Two rules shape every result screen, and breaking either is how these pages

@@ -1,12 +1,22 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createClient } from "@/lib/supabase/server";
 import { extractPdfText } from "@/lib/pdf/extract-text";
-import { isGuest } from "@/lib/auth/guest";
-import { isStorageDenied } from "@/lib/storage-errors";
+import { readOwnedDocument } from "@/lib/storage-read";
+import { BUCKET } from "@/lib/storage-upload";
 
-// Parsing a large PDF can outrun the platform default.
-export const maxDuration = 60;
+// Parsing a large PDF can outrun the platform default, and the file now
+// arrives from storage rather than in the request, so the 25 MB the app
+// promises actually reaches this code.
+export const maxDuration = 120;
 
+/**
+ * Create an RFP from an uploaded document.
+ *
+ * The browser has already put the PDF in storage — see lib/storage-upload.ts
+ * for why the file no longer travels in this request — and sends its path.
+ * This reads it back, extracts the text, and creates the row; if the row
+ * cannot be created the object is removed rather than left orphaned.
+ */
 export async function POST(request: NextRequest) {
   const supabase = await createClient();
   const {
@@ -17,74 +27,35 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 
-  const formData = await request.formData();
-  const file = formData.get("file") as File;
-  const title = formData.get("title") as string;
-  const description = (formData.get("description") as string) || "";
+  const body = (await request.json().catch(() => null)) as {
+    file_path?: unknown;
+    title?: unknown;
+    description?: unknown;
+  } | null;
+  const filePath = body?.file_path;
+  const title = typeof body?.title === "string" ? body.title.trim() : "";
+  const description =
+    typeof body?.description === "string" ? body.description : "";
 
-  if (!file || !title) {
+  if (!filePath || !title) {
     return NextResponse.json(
       { error: "File and title are required" },
       { status: 400 }
     );
   }
 
-  // Validate file size (25MB max)
-  if (file.size > 25 * 1024 * 1024) {
-    return NextResponse.json(
-      { error: "File too large. Maximum 25MB." },
-      { status: 400 }
-    );
+  const read = await readOwnedDocument(supabase, user, filePath, null);
+  if (!read.ok) {
+    return NextResponse.json({ error: read.error }, { status: read.status });
   }
-
-  // Validate file type. DOCX is deliberately rejected rather than accepted:
-  // extraction below is PDF-only, so a DOCX upload used to succeed, store an
-  // empty rfp_text, and then fail a step later with a misleading "needs OCR"
-  // message. Native DOCX parsing is a roadmap item (SPEC section 13).
-  if (file.type !== "application/pdf") {
-    return NextResponse.json(
-      {
-        error:
-          "Only PDF files are supported right now. If you have a Word " +
-          "document, export it to PDF and upload that.",
-      },
-      { status: 400 }
-    );
-  }
-
-  // Upload to Supabase Storage
-  const fileName = `${user.id}/${Date.now()}-${file.name}`;
-  const { error: uploadError } = await supabase.storage
-    .from("rfp-files")
-    .upload(fileName, file);
-
-  if (uploadError) {
-    // A guest at their file cap is refused by the storage insert policy, one
-    // step before the RFP cap below ever gets a look. That is a limit, not a
-    // fault, and it deserves the same explanation.
-    if (isGuest(user) && isStorageDenied(uploadError)) {
-      return NextResponse.json(
-        {
-          error:
-            "Guest sessions are limited to a few uploaded files. Save your " +
-            "work to an account from the banner above to keep going.",
-        },
-        { status: 403 }
-      );
-    }
-    console.error("Failed to upload RFP file:", uploadError.message);
-    return NextResponse.json(
-      { error: "Failed to upload file" },
-      { status: 500 }
-    );
-  }
+  const fileName = filePath as string;
 
   // Extract text and flag PDFs that appear to lack an OCR layer
   const {
     text: extractedText,
     pageCount,
     likelyScanned,
-  } = await extractPdfText(new Uint8Array(await file.arrayBuffer()));
+  } = await extractPdfText(read.bytes);
   const ocrStatus = likelyScanned ? "flagged" : "ok";
 
   // Create RFP record
@@ -102,9 +73,7 @@ export async function POST(request: NextRequest) {
     .single();
 
   if (rfpError) {
-    // The file is already in storage at this point, so drop it rather than
-    // leave an object no row will ever reference.
-    await supabase.storage.from("rfp-files").remove([fileName]);
+    await supabase.storage.from(BUCKET).remove([fileName]);
 
     // A guest who has hit their RFP cap trips the row-level security check on
     // insert. That is a limit, not a fault, and "Failed to create RFP" would
@@ -132,7 +101,12 @@ export async function POST(request: NextRequest) {
     rfp_id: rfp.id,
     user_id: user.id,
     action: "upload_rfp",
-    details: { title, file_name: file.name, ocr_status: ocrStatus },
+    details: {
+      title,
+      file_name: read.fileName,
+      size_bytes: read.size,
+      ocr_status: ocrStatus,
+    },
   });
 
   return NextResponse.json({

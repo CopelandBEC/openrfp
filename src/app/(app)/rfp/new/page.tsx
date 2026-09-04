@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
 import { FileTextIcon, UploadIcon } from "lucide-react";
 import { Button } from "@/components/ui/button";
@@ -10,9 +10,13 @@ import { Label } from "@/components/ui/label";
 import { AppHeader, PageIntro } from "@/components/app-shell";
 import { ErrorState } from "@/components/stage-state";
 import { cn } from "@/lib/utils";
+import { createClient } from "@/lib/supabase/client";
+import { readApiResponse } from "@/lib/api-response";
+import { discardDocument, uploadDocument } from "@/lib/storage-upload";
 
 export default function NewRfpPage() {
   const router = useRouter();
+  const supabase = useMemo(() => createClient(), []);
   const [file, setFile] = useState<File | null>(null);
   const [title, setTitle] = useState("");
   const [description, setDescription] = useState("");
@@ -27,25 +31,34 @@ export default function NewRfpPage() {
     setLoading(true);
     setError("");
 
-    const formData = new FormData();
-    formData.append("file", file);
-    formData.append("title", title);
-    formData.append("description", description);
-
     try {
-      const res = await fetch("/api/upload-rfp", {
-        method: "POST",
-        body: formData,
-      });
-
-      if (!res.ok) {
-        const data = await res.json();
-        throw new Error(data.error || "Failed to upload");
+      // Straight to storage, then the path to the route; see
+      // lib/storage-upload.ts for why the file no longer rides in the request.
+      const uploaded = await uploadDocument(supabase, file, null);
+      if (!uploaded.ok) {
+        throw new Error(uploaded.error);
       }
 
-      const data = await res.json();
+      const res = await fetch("/api/upload-rfp", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          file_path: uploaded.path,
+          title,
+          description,
+        }),
+      });
+
+      const result = await readApiResponse<{ rfp_id: string }>(
+        res,
+        "Failed to upload"
+      );
+      if (!result.ok) {
+        await discardDocument(supabase, uploaded.path);
+        throw new Error(result.error);
+      }
       // Navigate to the rubric generation step
-      router.push(`/rfp/${data.rfp_id}/rubric?new=1`);
+      router.push(`/rfp/${result.data.rfp_id}/rubric?new=1`);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Something went wrong");
     } finally {

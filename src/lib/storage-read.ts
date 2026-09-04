@@ -1,0 +1,69 @@
+import type { SupabaseClient, User } from "@supabase/supabase-js";
+import { BUCKET, MAX_UPLOAD_BYTES } from "@/lib/storage-upload";
+
+/**
+ * Read back a document the browser put in storage, on the server.
+ *
+ * The route used to receive the file itself; see `storage-upload.ts` for why
+ * it now receives a path. The path is still checked here, not only by the
+ * bucket's policies: it has to sit in the caller's own folder and, for a
+ * proposal, in the folder of the RFP it is being attached to, so a path
+ * supplied for one RFP cannot attach a file uploaded for another. Size and
+ * type are checked again server-side because the browser's checks are the
+ * browser's.
+ */
+export type ReadOutcome =
+  | { ok: true; bytes: Uint8Array; fileName: string; size: number }
+  | { ok: false; status: number; error: string };
+
+export async function readOwnedDocument(
+  supabase: SupabaseClient,
+  user: User,
+  path: unknown,
+  expectedFolder: string | null
+): Promise<ReadOutcome> {
+  if (typeof path !== "string" || path.length === 0 || path.includes("..")) {
+    return { ok: false, status: 400, error: "A file path is required." };
+  }
+  const segments = path.split("/");
+  const expected = expectedFolder ? 3 : 2;
+  if (
+    segments.length !== expected ||
+    segments[0] !== user.id ||
+    (expectedFolder && segments[1] !== expectedFolder) ||
+    segments[segments.length - 1].length === 0
+  ) {
+    return {
+      ok: false,
+      status: 400,
+      error: "That file was not uploaded for this request.",
+    };
+  }
+
+  const { data, error } = await supabase.storage.from(BUCKET).download(path);
+  if (error || !data) {
+    return {
+      ok: false,
+      status: 404,
+      error: "The uploaded file could not be read back. Please try the upload again.",
+    };
+  }
+  if (data.size > MAX_UPLOAD_BYTES) {
+    return { ok: false, status: 400, error: "File too large. Maximum 25MB." };
+  }
+  if (data.type && data.type !== "application/pdf") {
+    return {
+      ok: false,
+      status: 400,
+      error:
+        "Only PDF files are supported right now. If you have a Word document, export it to PDF and upload that.",
+    };
+  }
+  const fileName = segments[segments.length - 1].replace(/^\d+-/, "");
+  return {
+    ok: true,
+    bytes: new Uint8Array(await data.arrayBuffer()),
+    fileName,
+    size: data.size,
+  };
+}
