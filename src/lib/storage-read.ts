@@ -129,9 +129,13 @@ export type Claim =
 
 export async function claimUpload(
   supabase: SupabaseClient,
-  path: string
+  path: string,
+  ipHash: string | null
 ): Promise<Claim> {
-  const { data, error } = await supabase.rpc("claim_upload", { p_path: path });
+  const { data, error } = await supabase.rpc("claim_upload", {
+    p_path: path,
+    p_ip_hash: ipHash,
+  });
   if (error) return { state: "error", error: error.message };
   const d = data as {
     state?: unknown;

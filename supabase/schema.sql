@@ -535,6 +535,11 @@ alter table public.ai_limits add column if not exists
   member_upload_hourly_limit integer not null default 60;
 alter table public.ai_limits add column if not exists
   guest_upload_hourly_limit integer not null default 12;
+-- Guests can mint a new anonymous session with a page reload, so a per-user
+-- budget alone is no budget; this ceiling spans every guest session from one
+-- address, as `guest_ip_hourly_limit` does for AI calls.
+alter table public.ai_limits add column if not exists
+  guest_upload_ip_hourly_limit integer not null default 24;
 alter table public.ai_limits enable row level security;
 
 -- Which caller are we looking at? Anonymous sign-in stamps `is_anonymous` into
@@ -1036,12 +1041,17 @@ create table if not exists public.upload_claims (
   user_id uuid references auth.users on delete cascade not null,
   claimed_at timestamptz not null default now(),
   completed_at timestamptz,
-  token uuid not null default gen_random_uuid()
+  token uuid not null default gen_random_uuid(),
+  ip_hash text
 );
 alter table public.upload_claims
   add column if not exists token uuid not null default gen_random_uuid();
 alter table public.upload_claims
   add column if not exists completed_at timestamptz;
+alter table public.upload_claims
+  add column if not exists ip_hash text;
+create index if not exists upload_claims_ip_claimed
+  on public.upload_claims (ip_hash, claimed_at) where ip_hash is not null;
 drop index if exists public.upload_claims_user_inflight;
 create index if not exists upload_claims_user_claimed
   on public.upload_claims (user_id, claimed_at);
@@ -1063,15 +1073,21 @@ grant select (path, user_id, claimed_at, completed_at)
 create table if not exists public.upload_attempts (
   id bigint generated always as identity primary key,
   user_id uuid references auth.users on delete cascade not null,
-  attempted_at timestamptz not null default now()
+  attempted_at timestamptz not null default now(),
+  ip_hash text
 );
+alter table public.upload_attempts
+  add column if not exists ip_hash text;
 alter table public.upload_attempts enable row level security;
 revoke all on table public.upload_attempts from anon, authenticated;
 create index if not exists upload_attempts_user_at
   on public.upload_attempts (user_id, attempted_at);
+create index if not exists upload_attempts_ip_at
+  on public.upload_attempts (ip_hash, attempted_at) where ip_hash is not null;
 
 -- Signatures changed since the first versions of these; drop before create.
 drop function if exists public.claim_upload(text);
+drop function if exists public.claim_upload(text, text);
 drop function if exists public.complete_upload(text);
 drop function if exists public.release_upload(text);
 drop function if exists public.complete_upload(text, uuid);
@@ -1100,7 +1116,7 @@ revoke all on function public.upload_path_has_row(text) from public, anon, authe
 -- {"state": "missing"} when there is no such object in the caller's folder;
 -- {"state": "limited", "retry_after_seconds": n} when the caller has used
 -- their hourly parsing budget.
-create or replace function public.claim_upload(p_path text)
+create or replace function public.claim_upload(p_path text, p_ip_hash text default null)
 returns jsonb
 language plpgsql
 security definer
@@ -1117,6 +1133,10 @@ declare
   v_attempts int;
   v_oldest timestamptz;
   v_has_claim boolean := false;
+  v_guest boolean := public.is_guest();
+  v_ip_attempts int;
+  v_ip_oldest timestamptz;
+  v_ip_inflight int;
 begin
   if v_user is null then
     raise exception 'not signed in' using errcode = '42501';
@@ -1129,7 +1149,12 @@ begin
 
   -- One claim decision at a time per user, so the in-flight count below is
   -- taken against everything this user's other requests have already done.
+  -- For a guest, one at a time per address too. Locks are always taken user
+  -- first, then address, so two guests sharing an address cannot deadlock.
   perform pg_advisory_xact_lock(hashtext('upload_claims:' || v_user::text));
+  if v_guest and p_ip_hash is not null then
+    perform pg_advisory_xact_lock(hashtext('upload_claims:ip:' || p_ip_hash));
+  end if;
 
   -- Sweep: this user's in-flight claims abandoned for over a day, completed
   -- claims whose object no longer exists, and attempts older than a day. What
@@ -1176,11 +1201,20 @@ begin
   end if;
 
   -- The cap counts what this user has in flight, whether the new claim is a
-  -- fresh one or a takeover of a stale one.
+  -- fresh one or a takeover of a stale one. A guest's address is capped too,
+  -- across every anonymous session behind it.
   if (select count(*) from public.upload_claims
         where user_id = v_user and completed_at is null
           and claimed_at > now() - v_stale and path <> p_path) >= v_max_inflight then
     return jsonb_build_object('state', 'busy');
+  end if;
+  if v_guest and p_ip_hash is not null then
+    select count(*) into v_ip_inflight from public.upload_claims
+     where ip_hash = p_ip_hash and completed_at is null
+       and claimed_at > now() - v_stale and path <> p_path;
+    if v_ip_inflight >= v_max_inflight then
+      return jsonb_build_object('state', 'busy');
+    end if;
   end if;
 
   -- The hourly parsing budget, spent here — before the download, and
@@ -1189,7 +1223,7 @@ begin
   if not found then
     raise exception 'claim_upload: public.ai_limits has no row';
   end if;
-  v_attempt_limit := case when public.is_guest()
+  v_attempt_limit := case when v_guest
     then v_limits.guest_upload_hourly_limit
     else v_limits.member_upload_hourly_limit end;
   select count(*), min(attempted_at) into v_attempts, v_oldest
@@ -1202,19 +1236,35 @@ begin
       greatest(1, ceil(extract(epoch from (v_oldest + interval '1 hour' - now())))::int)
     );
   end if;
-  insert into public.upload_attempts (user_id) values (v_user);
+  -- Guests only: the address-wide ceiling across every anonymous session.
+  if v_guest and p_ip_hash is not null then
+    select count(*), min(attempted_at) into v_ip_attempts, v_ip_oldest
+      from public.upload_attempts
+     where ip_hash = p_ip_hash and attempted_at >= now() - interval '1 hour';
+    if v_ip_attempts >= v_limits.guest_upload_ip_hourly_limit then
+      return jsonb_build_object(
+        'state', 'limited',
+        'retry_after_seconds',
+        greatest(1, ceil(extract(epoch from (v_ip_oldest + interval '1 hour' - now())))::int)
+      );
+    end if;
+  end if;
+  insert into public.upload_attempts (user_id, ip_hash)
+  values (v_user, case when v_guest then p_ip_hash end);
 
   if v_has_claim then
     -- Abandoned by a killed function: take it over with a fresh token.
     v_token := gen_random_uuid();
     update public.upload_claims
-       set user_id = v_user, claimed_at = now(), token = v_token
+       set user_id = v_user, claimed_at = now(), token = v_token,
+           ip_hash = case when v_guest then p_ip_hash end
      where path = p_path;
     return jsonb_build_object('state', 'claimed', 'token', v_token);
   end if;
 
   v_token := gen_random_uuid();
-  insert into public.upload_claims (path, user_id, token) values (p_path, v_user, v_token);
+  insert into public.upload_claims (path, user_id, token, ip_hash)
+  values (p_path, v_user, v_token, case when v_guest then p_ip_hash end);
   return jsonb_build_object('state', 'claimed', 'token', v_token);
 end;
 $$;
@@ -1243,9 +1293,9 @@ as $$
    where path = p_path and token = p_token and completed_at is null;
 $$;
 
-revoke all on function public.claim_upload(text) from public, anon, authenticated;
+revoke all on function public.claim_upload(text, text) from public, anon, authenticated;
 revoke all on function public.complete_upload(text, uuid) from public, anon, authenticated;
 revoke all on function public.release_upload(text, uuid) from public, anon, authenticated;
-grant execute on function public.claim_upload(text) to authenticated;
+grant execute on function public.claim_upload(text, text) to authenticated;
 grant execute on function public.complete_upload(text, uuid) to authenticated;
 grant execute on function public.release_upload(text, uuid) to authenticated;

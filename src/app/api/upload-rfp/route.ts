@@ -9,6 +9,7 @@ import {
   validateOwnedPath,
 } from "@/lib/storage-read";
 import { BUCKET } from "@/lib/storage-upload";
+import { hashClientIp } from "@/lib/client-ip";
 
 // Parsing a large PDF can outrun the platform default, and the file now
 // arrives from storage rather than in the request. Kept below the claim
@@ -56,7 +57,7 @@ export async function POST(request: NextRequest) {
   }
   const fileName = body.file_path as string;
 
-  const claim = await claimUpload(supabase, fileName);
+  const claim = await claimUpload(supabase, fileName, hashClientIp(request));
   if (claim.state === "error") {
     console.error("Failed to claim upload:", claim.error);
     return NextResponse.json(
@@ -137,12 +138,21 @@ export async function POST(request: NextRequest) {
     .single();
 
   if (rfpError || !rfp) {
-    if (rfpError?.code === "23505") {
+    // See upload-response: the insert may have committed and its answer been
+    // lost. Ask by path before treating the object as unreferenced.
+    const { data: committed } = await supabase
+      .from("rfps")
+      .select("id")
+      .eq("rfp_file_path", fileName)
+      .maybeSingle();
+    if (committed) {
       await completeUpload(supabase, fileName, claim.token);
-      return NextResponse.json(
-        { error: "That file has already been used to create an RFP." },
-        { status: 409 }
-      );
+      return NextResponse.json({
+        rfp_id: committed.id,
+        ocr_status: ocrStatus,
+        page_count: pageCount,
+        message: "RFP uploaded successfully",
+      });
     }
     await abandon();
 

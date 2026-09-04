@@ -10,6 +10,7 @@ import {
   validateOwnedPath,
 } from "@/lib/storage-read";
 import { BUCKET } from "@/lib/storage-upload";
+import { hashClientIp } from "@/lib/client-ip";
 
 // Parsing a large PDF can outrun the platform default, and the file now
 // arrives from storage rather than in the request, so the 25 MB the app
@@ -76,7 +77,7 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: "RFP not found" }, { status: 404 });
   }
 
-  const claim = await claimUpload(supabase, fileName);
+  const claim = await claimUpload(supabase, fileName, hashClientIp(request));
   if (claim.state === "error") {
     console.error("Failed to claim upload:", claim.error);
     return NextResponse.json(
@@ -159,14 +160,24 @@ export async function POST(request: NextRequest) {
     .single();
 
   if (responseError || !responseRecord) {
-    // The unique index is a backstop behind the claim; a row for this path
-    // means the object is referenced and must stay.
-    if (responseError?.code === "23505") {
+    // An insert error is not proof that nothing committed: the statement can
+    // commit and its answer be lost on the way back. Before treating the
+    // object as unreferenced, ask by path — the unique index makes that
+    // exact — and if the row is there, this upload succeeded.
+    const { data: committed } = await supabase
+      .from("responses")
+      .select("id")
+      .eq("file_path", fileName)
+      .maybeSingle();
+    if (committed) {
       await completeUpload(supabase, fileName, claim.token);
-      return NextResponse.json(
-        { error: "That file has already been added to this RFP." },
-        { status: 409 }
-      );
+      return NextResponse.json({
+        response_id: committed.id,
+        file_path: fileName,
+        ocr_status: ocrStatus,
+        page_count: pageCount,
+        message: "Response uploaded successfully",
+      });
     }
     await abandon();
 
