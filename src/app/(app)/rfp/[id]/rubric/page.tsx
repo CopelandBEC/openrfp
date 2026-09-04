@@ -332,7 +332,8 @@ export default function RubricPage({
           <WorkingState
             title="Building your rubric"
             notes={RUBRIC_NOTES}
-            expected="15–60 seconds"
+            expected="a couple of minutes"
+            reassurance="Hang tight — it's worth it."
           />
         ) : error && !rubric ? (
           <ErrorState

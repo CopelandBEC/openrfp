@@ -692,8 +692,14 @@ export default function EvaluationsPage({
               className="mt-8 w-full"
             >
               {/* Each tab carries its own score, so the comparison starts in
-                  the tab bar rather than requiring four clicks. */}
-              <TabsList className="flex h-auto w-full flex-wrap gap-1 p-1">
+                  the tab bar rather than requiring four clicks.
+
+                  Which makes each tab two lines tall — and a bare `h-auto`
+                  loses to the list's own `group-data-horizontal/tabs:h-8`,
+                  since a variant sorts after an unmodified utility. The list
+                  stayed 32px while the tabs grew past it and spilled over its
+                  edge; overriding at the same variant is what actually wins. */}
+              <TabsList className="flex h-auto w-full flex-wrap items-stretch gap-1 p-1 group-data-horizontal/tabs:h-auto">
                 {evaluations.map((evaluation) => (
                   <TabsTrigger
                     key={evaluation.id}
