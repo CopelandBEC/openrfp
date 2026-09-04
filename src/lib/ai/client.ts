@@ -8,10 +8,10 @@ export interface AIConfig {
   baseURL: string;
 }
 
-// Kimi K3 is an open-weight model; Fireworks AI, a US company, runs it on its
-// US servers without retaining prompts or outputs, and the model's developer
-// never receives anything. See lib/ai/model-label.ts for how that is said to
-// the owner.
+// Kimi K3 is an open-weight model served by Fireworks AI, a US company, which
+// does not retain prompts or outputs; the model's developer never receives
+// anything. See lib/ai/model-label.ts for how that is said to the owner, and
+// for why nothing is claimed about where the servers are.
 const DEFAULT_MODEL = "accounts/fireworks/models/kimi-k3";
 const DEFAULT_BASE_URL = "https://api.fireworks.ai/inference/v1";
 
@@ -34,6 +34,19 @@ export function createAIClient(): OpenAI {
 
 export function getModelId(): string {
   return getAIConfig().model;
+}
+
+/**
+ * The host every call in this process goes to, for recording on the rows it
+ * produces. What the owner is told about where their documents went is read
+ * from that record, never inferred from the model id.
+ */
+export function getServingHost(): string | null {
+  try {
+    return new URL(getAIConfig().baseURL).host || null;
+  } catch {
+    return null;
+  }
 }
 
 /** The three structured-output call sites, which want different tuning. */

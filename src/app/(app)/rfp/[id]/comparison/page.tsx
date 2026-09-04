@@ -78,6 +78,8 @@ interface Comparison {
   comparative_analysis: string;
   close_calls: CloseCall[];
   model_used?: string;
+  /** Host the ranking call went to; null before it was recorded. */
+  served_by?: string | null;
   prompt_version?: string;
   created_at: string;
   updated_at?: string | null;
@@ -127,6 +129,7 @@ interface Evaluation {
   strengths: string[];
   weaknesses: string[];
   model_used: string;
+  served_by?: string | null;
   prompt_version: string;
   created_at: string;
   updated_at: string | null;
@@ -694,12 +697,19 @@ export default function ComparisonPage({
       // Two different facts. The comparison row names the model that ranked;
       // each evaluation names the model that scored it, and AI_MODEL can
       // change between the two.
-      rankingModel: comparison.model_used ?? null,
-      scoringModels: [
-        ...new Set(
-          evaluations.map((e) => e.model_used).filter((m): m is string => !!m)
-        ),
-      ],
+      rankingModel: comparison.model_used
+        ? { id: comparison.model_used, servedBy: comparison.served_by ?? null }
+        : null,
+      scoringModels: Array.from(
+        new Map(
+          evaluations
+            .filter((e) => !!e.model_used)
+            .map((e) => [
+              `${e.model_used}@${e.served_by ?? ""}`,
+              { id: e.model_used, servedBy: e.served_by ?? null },
+            ])
+        ).values()
+      ),
       criteria: criteriaList.map((c) => ({
         id: c.id,
         name: c.name,
@@ -1270,7 +1280,7 @@ export default function ComparisonPage({
               first and every score, quote and page reference behind a
               disclosure.
               {comparison.model_used && (
-                <> Ranked by {modelLabel(comparison.model_used)}.</>
+                <> Ranked by {modelLabel(comparison.model_used, comparison.served_by)}.</>
               )}
             </p>
           </>

@@ -80,6 +80,8 @@ interface Evaluation {
   strengths: string[];
   weaknesses: string[];
   model_used: string | null;
+  /** Host the scoring call went to; null before it was recorded. */
+  served_by?: string | null;
   prompt_version: string | null;
   created_at: string;
   /** Last written: a re-score or an override. Re-scoring upserts the row. */
@@ -454,7 +456,7 @@ export default function EvaluationsPage({
         supabase
           .from("evaluations")
           .select(
-            "id, response_id, rfp_id, scores, overall_score, summary, strengths, weaknesses, model_used, prompt_version, created_at, updated_at, rubric_updated_at"
+            "id, response_id, rfp_id, scores, overall_score, summary, strengths, weaknesses, model_used, served_by, prompt_version, created_at, updated_at, rubric_updated_at"
           )
           .eq("rfp_id", id)
           .order("created_at", { ascending: true }),
@@ -816,13 +818,13 @@ export default function EvaluationsPage({
                           <dl className="grid grid-cols-[auto_1fr] gap-x-4 gap-y-1 pt-2 text-xs text-muted-foreground">
                             <dt>Model</dt>
                             <dd className="text-foreground">
-                              {describeModel(evaluation.model_used).name}
+                              {describeModel(evaluation.model_used, evaluation.served_by).name}
                             </dd>
-                            {describeModel(evaluation.model_used).provenance && (
+                            {describeModel(evaluation.model_used, evaluation.served_by).provenance && (
                               <>
                                 <dt>Where it ran</dt>
                                 <dd className="text-foreground">
-                                  {describeModel(evaluation.model_used).provenance}
+                                  {describeModel(evaluation.model_used, evaluation.served_by).provenance}
                                 </dd>
                               </>
                             )}

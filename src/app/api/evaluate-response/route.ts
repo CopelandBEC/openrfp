@@ -9,6 +9,7 @@ import {
   getReasoningEffort,
   parseModelJson,
   truncateForModel,
+  getServingHost,
 } from "@/lib/ai/client";
 import {
   buildEvaluationPrompt,
@@ -185,6 +186,7 @@ export async function POST(request: NextRequest) {
           strengths: evaluation.strengths,
           weaknesses: evaluation.weaknesses,
           model_used: model,
+          served_by: getServingHost(),
           prompt_version: PROMPT_VERSION,
           rubric_updated_at: rubric.updated_at,
         },

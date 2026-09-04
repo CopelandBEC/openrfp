@@ -145,6 +145,23 @@ alter table public.comparisons
 alter table public.comparisons
   add column if not exists evaluation_revisions jsonb;
 
+-- Which endpoint actually served each model call, as the host of AI_BASE_URL
+-- at the time (`api.fireworks.ai` for the default). The screens say where an
+-- owner's documents went, and that cannot be read off the model id: the same
+-- `accounts/fireworks/models/...` id routed through a custom gateway ran
+-- somewhere else. Null means "not recorded", and the screens then name the
+-- model and claim nothing about hosting.
+--
+-- Not backfilled: nothing recorded it. If every row in this database was
+-- produced through the default endpoint — true for a deployment that never
+-- set AI_BASE_URL — the statement below records that; run it deliberately.
+--   update public.evaluations set served_by = 'api.fireworks.ai' where served_by is null;
+--   update public.comparisons set served_by = 'api.fireworks.ai' where served_by is null;
+alter table public.evaluations
+  add column if not exists served_by text;
+alter table public.comparisons
+  add column if not exists served_by text;
+
 -- When the rubric's criteria last changed — not when its row was last
 -- written. Accepting a rubric flips `edited_by_user` and rewrites `criteria`
 -- unchanged, and that must not read as a change every score was made

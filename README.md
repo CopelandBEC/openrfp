@@ -27,11 +27,11 @@ Every evaluation prompt, scoring rubric, and comparison logic is visible in this
 
 - **Frontend:** Next.js 16 + React 19 + TypeScript + shadcn/ui + Tailwind CSS
 - **Backend:** Supabase (PostgreSQL + Auth + Storage + Row-Level Security)
-- **AI:** Fireworks AI, a US inference provider. The default model is Kimi K3,
-  an open-weight model that Fireworks runs on its own US servers; Fireworks
-  does not store prompts or outputs or use them for training, and the model's
-  developer (Moonshot AI) never receives your documents. The architecture is
-  model-agnostic — switch models via env vars.
+- **AI:** Fireworks AI, a US company. The default model is Kimi K3, an
+  open-weight model that Fireworks serves; Fireworks does not store prompts or
+  outputs or use them for training, and the model's developer (Moonshot AI)
+  never receives your documents. The architecture is model-agnostic — switch
+  models via env vars.
 - **Hosting:** Vercel
 
 ## Getting started
@@ -75,14 +75,18 @@ changes without recreating the project.
 
 **Re-run `schema.sql` before deploying the version that added `updated_at` to
 `rubrics`, `evaluations` and `comparisons`, `rubric_updated_at` to
-`evaluations`, and `evaluation_revisions` to `comparisons`, not after.** The dashboard reads those columns to tell a
+`evaluations`, `evaluation_revisions` to `comparisons`, and `served_by` to
+both, not after.** The dashboard reads those columns to tell a
 current ranking from one that predates a score or a rubric change, and the
 scoring route stamps each evaluation with the rubric it scored against.
 PostgREST rejects the whole query when a selected column is missing — so until
 the migration is applied the dashboard cannot list any RFPs and scoring fails.
 After it is applied, every existing ranking reads as out of date once — nothing
 recorded which scores it saw, and the migration does not pretend to know — and
-one re-rank per RFP clears it. It says so, with the
+one re-rank per RFP clears it. Existing rows also carry no record of which
+endpoint served them, so the screens name their model without saying where it
+ran; if every row was produced through the default endpoint, `schema.sql` has a
+commented statement that records that, to run deliberately. It says so, with the
 database's message, rather than rendering its empty state; nothing is lost and
 applying the schema restores them. The backfill sets `updated_at` from
 `created_at`, so existing rows read as last changed when they were made rather
@@ -286,7 +290,7 @@ The app uses a model-agnostic architecture. To change the AI model, just update 
 
 ```env
 AI_PROVIDER=fireworks
-# Kimi K3, open-weight, run on Fireworks AI's US servers. Fireworks retains
+# Kimi K3, open-weight, served by Fireworks AI, a US company. Fireworks retains
 # nothing; the model's developer never receives your documents.
 AI_MODEL=accounts/fireworks/models/kimi-k3
 AI_BASE_URL=https://api.fireworks.ai/inference/v1

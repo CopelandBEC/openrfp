@@ -54,18 +54,24 @@ export interface ReportCloseCall {
   contenders: { vendorName: string; score: number }[];
 }
 
+/** A model as recorded on a row: its id and the host that actually served it. */
+export interface ModelRef {
+  id: string;
+  servedBy: string | null;
+}
+
 export interface ReportData {
   rfpTitle: string;
   generatedAt: string;
-  /** The model that produced the ranking — `comparisons.model_used`. */
-  rankingModel?: string | null;
+  /** The model that produced the ranking, and the host that served the call. */
+  rankingModel?: ModelRef | null;
   /**
    * The model or models that scored the proposals — every distinct
    * `evaluations.model_used`. Not the same fact as `rankingModel`: AI_MODEL
    * can change between scoring and ranking, and a report that named the
    * ranking model as the scorer misattributed the scores.
    */
-  scoringModels?: string[];
+  scoringModels?: ModelRef[];
   criteria: ReportCriterion[];
   vendors: ReportVendor[];
   comparativeAnalysis?: string;
@@ -642,11 +648,13 @@ export function buildReportHtml(data: ReportData): string {
   // without looking up a model id: the models named above ran on a US
   // provider's servers, nothing was retained, and the models' developers
   // never saw the documents.
-  const provenanceModels = [
-    ...new Set([...(data.scoringModels ?? []), ...(data.rankingModel ? [data.rankingModel] : [])]),
-  ]
-    .map((m) => describeModel(m))
-    .filter((d) => d.provenance);
+  const provenanceModels = Array.from(
+    new Map(
+      [...(data.scoringModels ?? []), ...(data.rankingModel ? [data.rankingModel] : [])].map(
+        (m) => [`${m.id}@${m.servedBy ?? ""}`, describeModel(m.id, m.servedBy)]
+      )
+    ).values()
+  ).filter((d) => d.provenance);
   const provenance = provenanceModels.length
     ? `<p class="meta">${esc(
         provenanceModels.length === 1
@@ -733,13 +741,19 @@ export function buildReportHtml(data: ReportData): string {
       data.criteria.length
     )} criteria · ${esc(data.generatedAt)}${
       data.scoringModels?.length
-        ? ` · scored by ${data.scoringModels
-            .map((m) => esc(describeModel(m).name))
+        ? ` · scored by ${[
+            ...new Set(
+              data.scoringModels.map((m) => describeModel(m.id, m.servedBy).name)
+            ),
+          ]
+            .map((n) => esc(n))
             .join(", ")}`
         : ""
     }${
       data.rankingModel
-        ? ` · ranked by ${esc(describeModel(data.rankingModel).name)}`
+        ? ` · ranked by ${esc(
+            describeModel(data.rankingModel.id, data.rankingModel.servedBy).name
+          )}`
         : ""
     }
   </p>

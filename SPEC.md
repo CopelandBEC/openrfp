@@ -63,9 +63,9 @@ From the Fireworks docs:
 
 ### Recommended Model Selection
 
-**Primary evaluation model: Kimi K3** — open-weight, run by Fireworks AI (a US
-company) on its US servers with no prompt or output retention; Moonshot AI, the
-model's developer, never receives documents.
+**Primary evaluation model: Kimi K3** — open-weight, served by Fireworks AI (a
+US company) with no prompt or output retention; Moonshot AI, the model's
+developer, never receives documents.
 - Vision-capable (native visual understanding)
 - 1M token context window (fits large proposals)
 - $3/M input, $15/M output (cached input: $0.30/M)
@@ -432,8 +432,8 @@ from being an open budget.
   - Strengths list (bullet points)
   - Weaknesses list (bullet points)
   - "Override Score" button per criterion → allows manual score adjustment
-  - Model used: "Kimi K3, run on Fireworks AI's US servers" (transparency —
-    say where the documents went, not just which model read them)
+  - Model used: "Kimi K3, served by Fireworks AI, a US company" (transparency —
+    say who handled the documents, not just which model read them)
 - **Design note:** The evidence quotes are critical. They prove the AI actually read the proposal and ground the evaluation in specific text, not hallucination.
 
 ### Screen 5: Comparison & Ranking

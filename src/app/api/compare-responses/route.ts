@@ -8,6 +8,7 @@ import {
   getModelId,
   getReasoningEffort,
   parseModelJson,
+  getServingHost,
 } from "@/lib/ai/client";
 import {
   buildComparisonPrompt,
@@ -255,6 +256,7 @@ export async function POST(request: NextRequest) {
           close_calls: comparison.close_calls || [],
           interview_focus_areas: comparison.interview_focus_areas || [],
           model_used: model,
+          served_by: getServingHost(),
           prompt_version: PROMPT_VERSION,
           evaluation_revisions: evaluationRevisions,
         },
