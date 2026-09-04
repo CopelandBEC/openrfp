@@ -188,17 +188,127 @@ update public.evaluations e
   from public.rubrics r
   where r.rfp_id = e.rfp_id and e.rubric_updated_at is null;
 
--- One row per uploaded object. The upload routes receive a storage path from
--- the browser and check for an existing row before doing any work, but two
--- concurrent requests for the same path would both pass that check; these
--- make the second insert fail instead, and the routes answer 409 without
--- removing the object the first row references. Paths carry a millisecond
--- timestamp, so existing rows are already distinct.
+-- One row per uploaded object, as a backstop to the claims below. Paths carry
+-- a millisecond timestamp, so existing rows are already distinct.
 create unique index if not exists responses_file_path_key
   on public.responses (file_path);
 create unique index if not exists rfps_rfp_file_path_key
   on public.rfps (rfp_file_path)
   where rfp_file_path is not null;
+
+-- ============================================
+-- Upload claims
+-- ============================================
+-- The upload routes receive a storage path from the browser and read the
+-- object back to parse it. Without a claim, the same path could be posted
+-- again and again, each request reading and parsing up to 25 MB. A row in
+-- `responses` or `rfps` cannot be the claim: the owner can delete their own
+-- rows through the policies above, mid-parse, and post the path again — and a
+-- row inserted before parsing is not proof that parsing finished.
+--
+-- So claims live here, and callers cannot touch this table directly: row-level
+-- security is on and the only write path is the functions below, which run as
+-- the definer. A claim is taken before the download, marked complete after the
+-- row is written, or released if anything fails. An in-flight claim older than
+-- the routes' maximum duration can only be a function that was killed, so a
+-- new request takes it over rather than being blocked for ever. The functions
+-- also cap how many claims one user can have in flight, so one stored object
+-- cannot be parsed many times at once by anyone.
+create table if not exists public.upload_claims (
+  path text primary key,
+  user_id uuid references auth.users on delete cascade not null,
+  claimed_at timestamptz not null default now(),
+  completed_at timestamptz
+);
+alter table public.upload_claims enable row level security;
+-- Owners may see their own claims, so the browser can tell "still being
+-- processed" from "never reached the server". Nothing else, directly.
+drop policy if exists "users read own upload claims" on public.upload_claims;
+create policy "users read own upload claims" on public.upload_claims
+  for select using (user_id = (select auth.uid()));
+create index if not exists upload_claims_user_inflight
+  on public.upload_claims (user_id, claimed_at) where completed_at is null;
+
+-- Returns 'claimed', 'busy' (this path or too many others are in flight for
+-- this user) or 'completed' (this path already produced a row).
+create or replace function public.claim_upload(p_path text)
+returns text
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  v_user uuid := auth.uid();
+  v_stale interval := interval '3 minutes';  -- > the routes' maxDuration
+  v_max_inflight int := 3;
+  v_existing public.upload_claims%rowtype;
+begin
+  if v_user is null then
+    raise exception 'not signed in' using errcode = '42501';
+  end if;
+  -- The path has to be in the caller's own folder; the storage policies say
+  -- the same, and this keeps the claims table from being a way round them.
+  if split_part(p_path, '/', 1) <> v_user::text then
+    raise exception 'path is not the caller''s' using errcode = '42501';
+  end if;
+
+  select * into v_existing from public.upload_claims where path = p_path for update;
+  if found then
+    if v_existing.completed_at is not null then
+      return 'completed';
+    end if;
+    if v_existing.claimed_at > now() - v_stale then
+      return 'busy';
+    end if;
+    -- Abandoned by a killed function: take it over.
+    update public.upload_claims
+       set user_id = v_user, claimed_at = now()
+     where path = p_path;
+    return 'claimed';
+  end if;
+
+  if (select count(*) from public.upload_claims
+        where user_id = v_user and completed_at is null
+          and claimed_at > now() - v_stale) >= v_max_inflight then
+    return 'busy';
+  end if;
+
+  insert into public.upload_claims (path, user_id) values (p_path, v_user);
+  return 'claimed';
+exception
+  when unique_violation then
+    -- Lost the race to insert the same path.
+    return 'busy';
+end;
+$$;
+
+create or replace function public.complete_upload(p_path text)
+returns void
+language sql
+security definer
+set search_path = public
+as $$
+  update public.upload_claims
+     set completed_at = now()
+   where path = p_path and user_id = auth.uid();
+$$;
+
+create or replace function public.release_upload(p_path text)
+returns void
+language sql
+security definer
+set search_path = public
+as $$
+  delete from public.upload_claims
+   where path = p_path and user_id = auth.uid() and completed_at is null;
+$$;
+
+revoke all on function public.claim_upload(text) from public;
+revoke all on function public.complete_upload(text) from public;
+revoke all on function public.release_upload(text) from public;
+grant execute on function public.claim_upload(text) to authenticated;
+grant execute on function public.complete_upload(text) to authenticated;
+grant execute on function public.release_upload(text) to authenticated;
 
 -- ============================================
 -- Audit Log

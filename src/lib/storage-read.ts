@@ -105,3 +105,39 @@ export async function readOwnedDocument(
   if (!dl.ok) return dl;
   return { ok: true, bytes: dl.bytes, size: dl.size, fileName: check.fileName };
 }
+
+// ---------------------------------------------------------------------------
+// Claims
+// ---------------------------------------------------------------------------
+
+/**
+ * Take, complete or release the claim on a path. See the `upload_claims`
+ * section of schema.sql for why claims are separate rows that callers cannot
+ * mutate: the row in `responses` or `rfps` is deletable by its owner, and its
+ * existence before parsing finished proved nothing.
+ */
+export type ClaimOutcome = "claimed" | "busy" | "completed";
+
+export async function claimUpload(
+  supabase: SupabaseClient,
+  path: string
+): Promise<ClaimOutcome | { error: string }> {
+  const { data, error } = await supabase.rpc("claim_upload", { p_path: path });
+  if (error) return { error: error.message };
+  if (data === "claimed" || data === "busy" || data === "completed") return data;
+  return { error: `unexpected claim state ${String(data)}` };
+}
+
+export async function completeUpload(
+  supabase: SupabaseClient,
+  path: string
+): Promise<void> {
+  await supabase.rpc("complete_upload", { p_path: path });
+}
+
+export async function releaseUpload(
+  supabase: SupabaseClient,
+  path: string
+): Promise<void> {
+  await supabase.rpc("release_upload", { p_path: path });
+}

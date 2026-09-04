@@ -83,32 +83,45 @@ export async function discardDocument(
 }
 
 /**
- * After a request that did not clearly succeed, find out whether a row now
- * references the object before deciding its fate.
+ * After a request that did not clearly succeed, find out what became of the
+ * object before deciding its fate.
  *
- * A request can fail ambiguously: the route inserted the row and the
- * connection dropped before the answer arrived. Deleting the object then
- * leaves a committed row pointing at nothing. So the browser asks the table
- * — its own rows, by path — and only removes the object when no row claims
- * it. Returns the referencing row's id when there is one, so the caller can
- * carry on as if the answer had arrived.
+ * A request can fail ambiguously: the connection dropped, and the route may
+ * have finished, may still be parsing, or may never have been reached. Rows
+ * are written only for finished uploads, so a row referencing the path means
+ * success, and the caller carries on to it. A claim on the path with no row
+ * yet means the route is still working (or was killed and will be taken over
+ * by the next attempt); the object must stay. Only when there is neither is
+ * the object nobody's, and it is removed. When the tables cannot be read the
+ * object is left alone: an orphan is recoverable, a deleted document is not.
  */
-export async function reclaimUnlessReferenced(
+export type Reconciliation =
+  | { state: "referenced"; id: string }
+  | { state: "processing" }
+  | { state: "reclaimed" }
+  | { state: "unknown" };
+
+export async function reconcileAfterFailure(
   supabase: SupabaseClient,
   ref: { table: "responses" | "rfps"; column: "file_path" | "rfp_file_path" },
   path: string
-): Promise<{ referencedId: string | null }> {
-  const { data, error } = await supabase
+): Promise<Reconciliation> {
+  const row = await supabase
     .from(ref.table)
     .select("id")
     .eq(ref.column, path)
     .maybeSingle();
-  if (error) {
-    // Cannot tell. Leaving an object is recoverable; deleting a referenced
-    // one is not.
-    return { referencedId: null };
-  }
-  if (data?.id) return { referencedId: String(data.id) };
+  if (row.error) return { state: "unknown" };
+  if (row.data?.id) return { state: "referenced", id: String(row.data.id) };
+
+  const claim = await supabase
+    .from("upload_claims")
+    .select("completed_at")
+    .eq("path", path)
+    .maybeSingle();
+  if (claim.error) return { state: "unknown" };
+  if (claim.data) return { state: "processing" };
+
   await discardDocument(supabase, path);
-  return { referencedId: null };
+  return { state: "reclaimed" };
 }

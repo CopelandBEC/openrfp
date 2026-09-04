@@ -18,7 +18,7 @@ import { AppHeader, PageIntro } from "@/components/app-shell";
 import { EmptyState, ErrorState } from "@/components/stage-state";
 import { scoredAgainstCurrentRubric } from "@/lib/stage";
 import { readApiResponse } from "@/lib/api-response";
-import { reclaimUnlessReferenced, uploadDocument } from "@/lib/storage-upload";
+import { reconcileAfterFailure, uploadDocument } from "@/lib/storage-upload";
 import { cn } from "@/lib/utils";
 
 // ---------------------------------------------------------------------------
@@ -296,18 +296,18 @@ export default function ResponsesPage({
         // is reclaimed. Removing an object the route already removed is
         // harmless.
         if (orphan) {
-          const { referencedId } = await reclaimUnlessReferenced(
+          const outcome = await reconcileAfterFailure(
             supabase,
             { table: "responses", column: "file_path" },
             orphan
           );
-          if (referencedId) {
+          if (outcome.state === "referenced") {
             const { data: row } = await supabase
               .from("responses")
               .select(
                 "id, rfp_id, vendor_name, file_path, extracted_text, ocr_status, page_count, status, created_at"
               )
-              .eq("id", referencedId)
+              .eq("id", outcome.id)
               .maybeSingle();
             if (row) {
               setResponses((prev) =>
@@ -317,6 +317,12 @@ export default function ResponsesPage({
               setFile(null);
               return;
             }
+          }
+          if (outcome.state === "processing" || outcome.state === "unknown") {
+            setError(
+              "The upload is still being processed. Refresh in a moment to see it; if it does not appear, add it again."
+            );
+            return;
           }
         }
         setError(

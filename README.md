@@ -345,12 +345,14 @@ a function are not limited. The path layout is unchanged:
 `<user id>/<timestamp>-<name>` for an RFP. The bucket itself enforces the 25 MB
 and PDF-only limits, so the browser-side checks are a courtesy, not the guard.
 
-The row is the claim on a path: each route inserts it before reading the file
-back, and the unique indexes on `responses.file_path` and `rfps.rfp_file_path`
-in `schema.sql` are what make a second request for the same path fail before
-any download or parsing. **Re-run `schema.sql` before deploying this version**
-so those indexes exist; without them a burst of identical requests could each
-parse the same 25 MB object.
+Each path is claimed before it is read, in the `upload_claims` table, through
+database functions the caller cannot bypass — see the `Upload claims` section
+of `schema.sql` for why a row in `responses` or `rfps` could not serve as the
+claim. A second request for a claimed path is refused before any download or
+parsing, each user has a small cap on uploads in flight, and a claim left by a
+killed function is taken over after three minutes. Rows are written only for
+finished uploads. **Re-run `schema.sql` before deploying this version**; the
+routes call those functions and fail without them.
 
 Every API call in the client reads its response through `readApiResponse`,
 which parses JSON only when the body is JSON and otherwise says what the status

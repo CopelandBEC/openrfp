@@ -2,12 +2,19 @@ import { NextRequest, NextResponse } from "next/server";
 import { createClient } from "@/lib/supabase/server";
 import { extractPdfText } from "@/lib/pdf/extract-text";
 import { isGuest } from "@/lib/auth/guest";
-import { downloadDocument, validateOwnedPath } from "@/lib/storage-read";
+import {
+  claimUpload,
+  completeUpload,
+  downloadDocument,
+  releaseUpload,
+  validateOwnedPath,
+} from "@/lib/storage-read";
 import { BUCKET } from "@/lib/storage-upload";
 
 // Parsing a large PDF can outrun the platform default, and the file now
 // arrives from storage rather than in the request, so the 25 MB the app
-// promises actually reaches this code.
+// promises actually reaches this code. The claim functions treat anything in
+// flight longer than 3 minutes as abandoned; keep this below that.
 export const maxDuration = 120;
 
 /**
@@ -16,12 +23,13 @@ export const maxDuration = 120;
  * The browser has already put the PDF in storage — see lib/storage-upload.ts
  * for why the file no longer travels in this request — and sends its path.
  *
- * The row is the claim. It is inserted *before* the file is read back, with
- * the text still to come, so that a second request for the same path is
- * refused by the unique index on `file_path` before a byte is downloaded or
- * parsed. Checked after the parse, one stored object could be turned into
- * many concurrent 25 MB reads and parses by cheap repeated requests. If
- * reading or parsing then fails, the row and the object both go.
+ * Order matters. The path is claimed first, in a table the caller cannot
+ * touch, so a second request for the same path is refused before a byte is
+ * read; then the file is read back and parsed; then the row is written, with
+ * its text, so a row exists only for a finished upload; then the claim is
+ * marked complete so the path can never be reused. Any failure in between
+ * releases the claim and removes the object, so a retry is possible and
+ * nothing is left that no row references.
  */
 export async function POST(request: NextRequest) {
   const supabase = await createClient();
@@ -55,55 +63,39 @@ export async function POST(request: NextRequest) {
   }
   const fileName = body.file_path as string;
 
-  // Claim the path.
-  const { data: claimed, error: claimError } = await supabase
-    .from("responses")
-    .insert({
-      rfp_id: rfpId,
-      vendor_name: vendorName,
-      file_path: fileName,
-      status: "pending",
-    })
-    .select("id")
-    .single();
-
-  if (claimError || !claimed) {
-    // Another request already holds this path; its row references the
-    // object, so the object stays.
-    if (claimError?.code === "23505") {
-      return NextResponse.json(
-        { error: "That file has already been added to this RFP." },
-        { status: 409 }
-      );
-    }
-    // Nothing references the object from here on. Remove it rather than leave
-    // it with no row and, for a guest, occupying one of their capped slots.
-    await supabase.storage.from(BUCKET).remove([fileName]);
-
-    // A guest at their response cap trips the row-level security check on
-    // insert. That is a limit, not a fault.
-    if (claimError?.code === "42501" && isGuest(user)) {
-      return NextResponse.json(
-        {
-          error:
-            "Guest sessions are limited to a few vendor responses. Save your " +
-            "work to an account from the banner above to keep going.",
-        },
-        { status: 403 }
-      );
-    }
-    console.error("Failed to create response:", claimError?.message);
+  const claim = await claimUpload(supabase, fileName);
+  if (typeof claim !== "string") {
+    console.error("Failed to claim upload:", claim.error);
     return NextResponse.json(
-      { error: "Failed to create response record" },
+      { error: "Failed to start processing the file. Please try again." },
       { status: 500 }
     );
   }
+  if (claim === "completed") {
+    return NextResponse.json(
+      { error: "That file has already been added to this RFP." },
+      { status: 409 }
+    );
+  }
+  if (claim === "busy") {
+    return NextResponse.json(
+      {
+        error:
+          "That file is still being processed, or too many uploads are in progress. Give it a moment.",
+      },
+      { status: 409 }
+    );
+  }
 
-  // Read the file back and extract text, now that the path is ours alone.
+  // From here on, every failure hands the path back and removes the object.
+  const abandon = async () => {
+    await supabase.storage.from(BUCKET).remove([fileName]);
+    await releaseUpload(supabase, fileName);
+  };
+
   const dl = await downloadDocument(supabase, fileName);
   if (!dl.ok) {
-    await supabase.from("responses").delete().eq("id", claimed.id);
-    await supabase.storage.from(BUCKET).remove([fileName]);
+    await abandon();
     return NextResponse.json({ error: dl.error }, { status: dl.status });
   }
 
@@ -115,8 +107,7 @@ export async function POST(request: NextRequest) {
       dl.bytes
     ));
   } catch (err) {
-    await supabase.from("responses").delete().eq("id", claimed.id);
-    await supabase.storage.from(BUCKET).remove([fileName]);
+    await abandon();
     console.error("Failed to read PDF:", err instanceof Error ? err.message : err);
     return NextResponse.json(
       { error: "That PDF could not be read. Try re-saving it and uploading again." },
@@ -125,24 +116,52 @@ export async function POST(request: NextRequest) {
   }
   const ocrStatus = likelyScanned ? "flagged" : "ok";
 
-  const { error: fillError } = await supabase
+  const { data: responseRecord, error: responseError } = await supabase
     .from("responses")
-    .update({
+    .insert({
+      rfp_id: rfpId,
+      vendor_name: vendorName,
+      file_path: fileName,
       extracted_text: extractedText,
       ocr_status: ocrStatus,
       page_count: pageCount,
+      status: "pending",
     })
-    .eq("id", claimed.id);
+    .select("id")
+    .single();
 
-  if (fillError) {
-    await supabase.from("responses").delete().eq("id", claimed.id);
-    await supabase.storage.from(BUCKET).remove([fileName]);
-    console.error("Failed to store extracted text:", fillError.message);
+  if (responseError || !responseRecord) {
+    // The unique index is a backstop behind the claim; a row for this path
+    // means the object is referenced and must stay.
+    if (responseError?.code === "23505") {
+      await completeUpload(supabase, fileName);
+      return NextResponse.json(
+        { error: "That file has already been added to this RFP." },
+        { status: 409 }
+      );
+    }
+    await abandon();
+
+    // A guest at their response cap trips the row-level security check on
+    // insert. That is a limit, not a fault.
+    if (responseError?.code === "42501" && isGuest(user)) {
+      return NextResponse.json(
+        {
+          error:
+            "Guest sessions are limited to a few vendor responses. Save your " +
+            "work to an account from the banner above to keep going.",
+        },
+        { status: 403 }
+      );
+    }
+    console.error("Failed to create response:", responseError?.message);
     return NextResponse.json(
       { error: "Failed to create response record" },
       { status: 500 }
     );
   }
+
+  await completeUpload(supabase, fileName);
 
   // Audit log
   await supabase.from("audit_log").insert({
@@ -158,7 +177,7 @@ export async function POST(request: NextRequest) {
   });
 
   return NextResponse.json({
-    response_id: claimed.id,
+    response_id: responseRecord.id,
     file_path: fileName,
     ocr_status: ocrStatus,
     page_count: pageCount,

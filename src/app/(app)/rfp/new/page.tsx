@@ -12,7 +12,7 @@ import { ErrorState } from "@/components/stage-state";
 import { cn } from "@/lib/utils";
 import { createClient } from "@/lib/supabase/client";
 import { readApiResponse } from "@/lib/api-response";
-import { reclaimUnlessReferenced, uploadDocument } from "@/lib/storage-upload";
+import { reconcileAfterFailure, uploadDocument } from "@/lib/storage-upload";
 
 export default function NewRfpPage() {
   const router = useRouter();
@@ -66,13 +66,19 @@ export default function NewRfpPage() {
       // See the note in responses/page.tsx: the row may exist even though
       // the answer never arrived. If it does, carry on to it.
       if (orphan) {
-        const { referencedId } = await reclaimUnlessReferenced(
+        const outcome = await reconcileAfterFailure(
           supabase,
           { table: "rfps", column: "rfp_file_path" },
           orphan
         );
-        if (referencedId) {
-          router.push(`/rfp/${referencedId}/rubric?new=1`);
+        if (outcome.state === "referenced") {
+          router.push(`/rfp/${outcome.id}/rubric?new=1`);
+          return;
+        }
+        if (outcome.state === "processing" || outcome.state === "unknown") {
+          setError(
+            "The upload is still being processed. Check the dashboard in a moment; if the RFP does not appear, upload it again."
+          );
           return;
         }
       }

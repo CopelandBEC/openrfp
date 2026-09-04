@@ -1,12 +1,18 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createClient } from "@/lib/supabase/server";
 import { extractPdfText } from "@/lib/pdf/extract-text";
-import { downloadDocument, validateOwnedPath } from "@/lib/storage-read";
+import {
+  claimUpload,
+  completeUpload,
+  downloadDocument,
+  releaseUpload,
+  validateOwnedPath,
+} from "@/lib/storage-read";
 import { BUCKET } from "@/lib/storage-upload";
 
 // Parsing a large PDF can outrun the platform default, and the file now
-// arrives from storage rather than in the request, so the 25 MB the app
-// promises actually reaches this code.
+// arrives from storage rather than in the request. Kept below the claim
+// functions' 3-minute abandonment threshold.
 export const maxDuration = 120;
 
 /**
@@ -14,8 +20,9 @@ export const maxDuration = 120;
  *
  * The browser has already put the PDF in storage — see lib/storage-upload.ts
  * for why the file no longer travels in this request — and sends its path.
- * The row is inserted before the file is read back, as the claim on the path;
- * see upload-response for why. If reading or parsing fails, row and object go.
+ * Claim, read, parse, write the row with its text, complete the claim; any
+ * failure in between releases the claim and removes the object. See
+ * upload-response for the reasoning.
  */
 export async function POST(request: NextRequest) {
   const supabase = await createClient();
@@ -49,52 +56,38 @@ export async function POST(request: NextRequest) {
   }
   const fileName = body.file_path as string;
 
-  // Claim the path.
-  const { data: rfp, error: claimError } = await supabase
-    .from("rfps")
-    .insert({
-      owner_id: user.id,
-      title,
-      description,
-      rfp_file_path: fileName,
-      status: "draft",
-    })
-    .select("id")
-    .single();
-
-  if (claimError || !rfp) {
-    if (claimError?.code === "23505") {
-      return NextResponse.json(
-        { error: "That file has already been used to create an RFP." },
-        { status: 409 }
-      );
-    }
-    await supabase.storage.from(BUCKET).remove([fileName]);
-
-    // A guest who has hit their RFP cap trips the row-level security check on
-    // insert. That is a limit, not a fault, and "Failed to create RFP" would
-    // send them off looking for a broken upload.
-    if (claimError?.code === "42501") {
-      return NextResponse.json(
-        {
-          error:
-            "Guest sessions are limited to a few RFPs. Save your work to an " +
-            "account from the banner above to keep going.",
-        },
-        { status: 403 }
-      );
-    }
-    console.error("Failed to create RFP:", claimError?.message);
+  const claim = await claimUpload(supabase, fileName);
+  if (typeof claim !== "string") {
+    console.error("Failed to claim upload:", claim.error);
     return NextResponse.json(
-      { error: "Failed to create RFP" },
+      { error: "Failed to start processing the file. Please try again." },
       { status: 500 }
     );
   }
+  if (claim === "completed") {
+    return NextResponse.json(
+      { error: "That file has already been used to create an RFP." },
+      { status: 409 }
+    );
+  }
+  if (claim === "busy") {
+    return NextResponse.json(
+      {
+        error:
+          "That file is still being processed, or too many uploads are in progress. Give it a moment.",
+      },
+      { status: 409 }
+    );
+  }
+
+  const abandon = async () => {
+    await supabase.storage.from(BUCKET).remove([fileName]);
+    await releaseUpload(supabase, fileName);
+  };
 
   const dl = await downloadDocument(supabase, fileName);
   if (!dl.ok) {
-    await supabase.from("rfps").delete().eq("id", rfp.id);
-    await supabase.storage.from(BUCKET).remove([fileName]);
+    await abandon();
     return NextResponse.json({ error: dl.error }, { status: dl.status });
   }
 
@@ -106,8 +99,7 @@ export async function POST(request: NextRequest) {
       dl.bytes
     ));
   } catch (err) {
-    await supabase.from("rfps").delete().eq("id", rfp.id);
-    await supabase.storage.from(BUCKET).remove([fileName]);
+    await abandon();
     console.error("Failed to read PDF:", err instanceof Error ? err.message : err);
     return NextResponse.json(
       { error: "That PDF could not be read. Try re-saving it and uploading again." },
@@ -116,20 +108,50 @@ export async function POST(request: NextRequest) {
   }
   const ocrStatus = likelyScanned ? "flagged" : "ok";
 
-  const { error: fillError } = await supabase
+  const { data: rfp, error: rfpError } = await supabase
     .from("rfps")
-    .update({ rfp_text: extractedText })
-    .eq("id", rfp.id);
+    .insert({
+      owner_id: user.id,
+      title,
+      description,
+      rfp_file_path: fileName,
+      rfp_text: extractedText,
+      status: "draft",
+    })
+    .select("id")
+    .single();
 
-  if (fillError) {
-    await supabase.from("rfps").delete().eq("id", rfp.id);
-    await supabase.storage.from(BUCKET).remove([fileName]);
-    console.error("Failed to store RFP text:", fillError.message);
+  if (rfpError || !rfp) {
+    if (rfpError?.code === "23505") {
+      await completeUpload(supabase, fileName);
+      return NextResponse.json(
+        { error: "That file has already been used to create an RFP." },
+        { status: 409 }
+      );
+    }
+    await abandon();
+
+    // A guest who has hit their RFP cap trips the row-level security check on
+    // insert. That is a limit, not a fault, and "Failed to create RFP" would
+    // send them off looking for a broken upload.
+    if (rfpError?.code === "42501") {
+      return NextResponse.json(
+        {
+          error:
+            "Guest sessions are limited to a few RFPs. Save your work to an " +
+            "account from the banner above to keep going.",
+        },
+        { status: 403 }
+      );
+    }
+    console.error("Failed to create RFP:", rfpError?.message);
     return NextResponse.json(
       { error: "Failed to create RFP" },
       { status: 500 }
     );
   }
+
+  await completeUpload(supabase, fileName);
 
   // Log to audit trail
   await supabase.from("audit_log").insert({
