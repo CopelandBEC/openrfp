@@ -2,11 +2,36 @@ import { NextRequest, NextResponse } from "next/server";
 import { createClient } from "@/lib/supabase/server";
 import { extractPdfText } from "@/lib/pdf/extract-text";
 import { isGuest } from "@/lib/auth/guest";
-import { isStorageDenied } from "@/lib/storage-errors";
+import {
+  claimUpload,
+  completeUpload,
+  downloadDocument,
+  releaseUpload,
+  validateOwnedPath,
+} from "@/lib/storage-read";
+import { BUCKET } from "@/lib/storage-upload";
+import { hashClientIp } from "@/lib/client-ip";
 
-// Parsing a large PDF can outrun the platform default.
-export const maxDuration = 60;
+// Parsing a large PDF can outrun the platform default, and the file now
+// arrives from storage rather than in the request, so the 25 MB the app
+// promises actually reaches this code. The claim functions treat anything in
+// flight longer than 3 minutes as abandoned; keep this below that.
+export const maxDuration = 120;
 
+/**
+ * Attach an uploaded proposal to an RFP.
+ *
+ * The browser has already put the PDF in storage — see lib/storage-upload.ts
+ * for why the file no longer travels in this request — and sends its path.
+ *
+ * Order matters. The path is claimed first, in a table the caller cannot
+ * touch, so a second request for the same path is refused before a byte is
+ * read; then the file is read back and parsed; then the row is written, with
+ * its text, so a row exists only for a finished upload; then the claim is
+ * marked complete so the path can never be reused. Any failure in between
+ * releases the claim and removes the object, so a retry is possible and
+ * nothing is left that no row references.
+ */
 export async function POST(request: NextRequest) {
   const supabase = await createClient();
   const {
@@ -17,76 +42,109 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 
-  const formData = await request.formData();
-  const file = formData.get("file") as File;
-  const vendorName = formData.get("vendor_name") as string;
-  const rfpId = formData.get("rfp_id") as string;
+  const body = (await request.json().catch(() => null)) as {
+    file_path?: unknown;
+    vendor_name?: unknown;
+    rfp_id?: unknown;
+  } | null;
+  const vendorName =
+    typeof body?.vendor_name === "string" ? body.vendor_name.trim() : "";
+  const rfpId = typeof body?.rfp_id === "string" ? body.rfp_id : "";
 
-  if (!file || !vendorName || !rfpId) {
+  if (!body?.file_path || !vendorName || !rfpId) {
     return NextResponse.json(
       { error: "File, vendor name, and RFP ID are required" },
       { status: 400 }
     );
   }
 
-  // Validate file size
-  if (file.size > 25 * 1024 * 1024) {
-    return NextResponse.json(
-      { error: "File too large. Maximum 25MB." },
-      { status: 400 }
-    );
+  const check = validateOwnedPath(user, body.file_path, rfpId);
+  if (!check.ok) {
+    return NextResponse.json({ error: check.error }, { status: check.status });
+  }
+  const fileName = body.file_path as string;
+
+  // The RFP has to be the caller's before anything is read or parsed. The
+  // insert's row-level security would refuse this too, but only after a
+  // 25 MB download and parse; row-level security scopes this select, so a
+  // missing row is a foreign or nonexistent RFP either way.
+  const { data: rfp } = await supabase
+    .from("rfps")
+    .select("id")
+    .eq("id", rfpId)
+    .maybeSingle();
+  if (!rfp) {
+    return NextResponse.json({ error: "RFP not found" }, { status: 404 });
   }
 
-  // Validate file type. DOCX is deliberately rejected rather than accepted:
-  // extraction below is PDF-only, so a DOCX upload used to succeed, store an
-  // empty rfp_text, and then fail a step later with a misleading "needs OCR"
-  // message. Native DOCX parsing is a roadmap item (SPEC section 13).
-  if (file.type !== "application/pdf") {
+  const claim = await claimUpload(supabase, fileName, hashClientIp(request));
+  if (claim.state === "error") {
+    console.error("Failed to claim upload:", claim.error);
     return NextResponse.json(
-      {
-        error:
-          "Only PDF files are supported right now. If you have a Word " +
-          "document, export it to PDF and upload that.",
-      },
-      { status: 400 }
-    );
-  }
-
-  // Upload to storage
-  const fileName = `${user.id}/${rfpId}/${Date.now()}-${file.name}`;
-  const { error: uploadError } = await supabase.storage
-    .from("rfp-files")
-    .upload(fileName, file);
-
-  if (uploadError) {
-    // A guest at their file cap is refused by the storage insert policy. That
-    // is a limit, not a fault, and it deserves an explanation.
-    if (isGuest(user) && isStorageDenied(uploadError)) {
-      return NextResponse.json(
-        {
-          error:
-            "Guest sessions are limited to a few uploaded files. Save your " +
-            "work to an account from the banner above to keep going.",
-        },
-        { status: 403 }
-      );
-    }
-    console.error("Failed to upload response file:", uploadError.message);
-    return NextResponse.json(
-      { error: "Failed to upload file" },
+      { error: "Failed to start processing the file. Please try again." },
       { status: 500 }
     );
   }
+  if (claim.state === "completed") {
+    return NextResponse.json(
+      { error: "That file has already been added to this RFP." },
+      { status: 409 }
+    );
+  }
+  if (claim.state === "limited") {
+    const minutes = Math.max(1, Math.ceil(claim.retryAfterSeconds / 60));
+    return NextResponse.json(
+      {
+        error: `You've reached this hour's limit on document uploads. Try again in about ${minutes} minute${minutes === 1 ? "" : "s"}.`,
+      },
+      { status: 429, headers: { "Retry-After": String(claim.retryAfterSeconds) } }
+    );
+  }
+  if (claim.state === "missing") {
+    return NextResponse.json(
+      { error: "The uploaded file could not be found. Please try the upload again." },
+      { status: 404 }
+    );
+  }
+  if (claim.state === "busy") {
+    return NextResponse.json(
+      {
+        error:
+          "That file is still being processed, or too many uploads are in progress. Give it a moment.",
+      },
+      { status: 409 }
+    );
+  }
 
-  // Extract text and flag PDFs that appear to lack an OCR layer
-  const {
-    text: extractedText,
-    pageCount,
-    likelyScanned,
-  } = await extractPdfText(new Uint8Array(await file.arrayBuffer()));
+  // From here on, every failure hands the path back and removes the object.
+  const abandon = async () => {
+    await supabase.storage.from(BUCKET).remove([fileName]);
+    await releaseUpload(supabase, fileName, claim.token);
+  };
+
+  const dl = await downloadDocument(supabase, fileName);
+  if (!dl.ok) {
+    await abandon();
+    return NextResponse.json({ error: dl.error }, { status: dl.status });
+  }
+
+  let extractedText: string;
+  let pageCount: number;
+  let likelyScanned: boolean;
+  try {
+    ({ text: extractedText, pageCount, likelyScanned } = await extractPdfText(
+      dl.bytes
+    ));
+  } catch (err) {
+    await abandon();
+    console.error("Failed to read PDF:", err instanceof Error ? err.message : err);
+    return NextResponse.json(
+      { error: "That PDF could not be read. Try re-saving it and uploading again." },
+      { status: 422 }
+    );
+  }
   const ocrStatus = likelyScanned ? "flagged" : "ok";
 
-  // Create response record
   const { data: responseRecord, error: responseError } = await supabase
     .from("responses")
     .insert({
@@ -98,18 +156,44 @@ export async function POST(request: NextRequest) {
       page_count: pageCount,
       status: "pending",
     })
-    .select()
+    .select("id")
     .single();
 
-  if (responseError) {
-    // The file is already in storage, and for a guest it now occupies one of
-    // their capped slots. Remove it rather than leave an object no row will
-    // ever reference and no UI can delete.
-    await supabase.storage.from("rfp-files").remove([fileName]);
+  if (responseError || !responseRecord) {
+    // An insert error is not proof that nothing committed: the statement can
+    // commit and its answer be lost on the way back. Before treating the
+    // object as unreferenced, ask by path — the unique index makes that
+    // exact — and if the row is there, this upload succeeded.
+    const { data: committed, error: lookupError } = await supabase
+      .from("responses")
+      .select("id")
+      .eq("file_path", fileName)
+      .maybeSingle();
+    if (committed) {
+      await completeUpload(supabase, fileName, claim.token);
+      return NextResponse.json({
+        response_id: committed.id,
+        file_path: fileName,
+        ocr_status: ocrStatus,
+        page_count: pageCount,
+        message: "Response uploaded successfully",
+      });
+    }
+    if (lookupError) {
+      // Could not ask, so nothing is known — the same outage that lost the
+      // insert's answer. The object and the claim stay; the claim goes stale
+      // and the browser's retry settles it once the database is reachable.
+      console.error("Could not confirm response insert:", lookupError.message);
+      return NextResponse.json(
+        { error: "The database did not answer. The upload will be settled on your next attempt." },
+        { status: 503 }
+      );
+    }
+    await abandon();
 
     // A guest at their response cap trips the row-level security check on
     // insert. That is a limit, not a fault.
-    if (responseError.code === "42501" && isGuest(user)) {
+    if (responseError?.code === "42501" && isGuest(user)) {
       return NextResponse.json(
         {
           error:
@@ -119,20 +203,26 @@ export async function POST(request: NextRequest) {
         { status: 403 }
       );
     }
-
-    console.error("Failed to create response:", responseError.message);
+    console.error("Failed to create response:", responseError?.message);
     return NextResponse.json(
       { error: "Failed to create response record" },
       { status: 500 }
     );
   }
 
+  await completeUpload(supabase, fileName, claim.token);
+
   // Audit log
   await supabase.from("audit_log").insert({
     rfp_id: rfpId,
     user_id: user.id,
     action: "upload_response",
-    details: { vendor_name: vendorName, file_name: file.name, ocr_status: ocrStatus },
+    details: {
+      vendor_name: vendorName,
+      file_name: check.fileName,
+      size_bytes: dl.size,
+      ocr_status: ocrStatus,
+    },
   });
 
   return NextResponse.json({

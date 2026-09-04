@@ -17,6 +17,16 @@ import { Label } from "@/components/ui/label";
 import { AppHeader, PageIntro } from "@/components/app-shell";
 import { EmptyState, ErrorState } from "@/components/stage-state";
 import { scoredAgainstCurrentRubric } from "@/lib/stage";
+import { readApiResponse } from "@/lib/api-response";
+import {
+  forgetPending,
+  readPending,
+  reconcileAfterFailure,
+  rememberPending,
+  uploadDocument,
+  waitForUpload,
+  type Reconciliation,
+} from "@/lib/storage-upload";
 import { cn } from "@/lib/utils";
 
 // ---------------------------------------------------------------------------
@@ -207,6 +217,177 @@ export default function ResponsesPage({
   }, [fetchResponses]);
 
   // -----------------------------------------------------------------------
+  // Attaching an uploaded object, and finding out what became of one
+  // -----------------------------------------------------------------------
+
+  const pendingScope = `response:${id}`;
+
+  /** Ask the route to attach an object already in storage. */
+  const attach = useCallback(
+    async (path: string, fields: Record<string, string>) => {
+      const res = await fetch("/api/upload-response", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          file_path: path,
+          vendor_name: fields.vendor_name,
+          rfp_id: id,
+        }),
+      });
+      const result = await readApiResponse<{
+        response_id: string;
+        file_path: string;
+        ocr_status?: "ok" | "flagged" | "unknown";
+        page_count?: number;
+      }>(res, "Failed to upload response");
+      if (!result.ok) throw new Error(result.error);
+      return result.data;
+    },
+    [id]
+  );
+
+  const adopt = useCallback((row: Response) => {
+    setResponses((prev) =>
+      prev.some((r) => r.id === row.id) ? prev : [...prev, row]
+    );
+    setVendorName("");
+    setFile(null);
+    // Reset the file input so the same file can be re-selected if needed
+    const fileInput = document.getElementById(
+      "file-input"
+    ) as HTMLInputElement | null;
+    if (fileInput) fileInput.value = "";
+  }, []);
+
+  const adoptById = useCallback(
+    async (responseId: string) => {
+      const { data: row } = await supabase
+        .from("responses")
+        .select(
+          "id, rfp_id, vendor_name, file_path, extracted_text, ocr_status, page_count, status, created_at"
+        )
+        .eq("id", responseId)
+        .maybeSingle();
+      if (row) adopt(row as Response);
+      return !!row;
+    },
+    [supabase, adopt]
+  );
+
+  /**
+   * Take an object that is in storage all the way to a row, whatever happens
+   * on the way.
+   *
+   * The route may answer, or the connection may drop while it is still
+   * parsing, or the function may be killed at its maximum duration. So the
+   * path and the fields needed to post it are remembered in this browser
+   * first, and every non-answer is settled by asking the tables: a row means
+   * success; a live claim means wait, polling until the lease a killed route
+   * cannot outlive has passed; a stale claim means post the same path again,
+   * which takes the claim over; nothing means the object was reclaimed. The
+   * memory is cleared only once the outcome is known, so that leaving the
+   * page mid-way does not end with a fresh upload and an orphaned object.
+   */
+  const settleUpload = useCallback(
+    async (
+      path: string,
+      fields: Record<string, string>,
+      freshlyUploaded: boolean
+    ) => {
+      rememberPending(pendingScope, { path, startedAt: Date.now(), fields });
+      const finish = (outcome: "done" | "gone") => {
+        forgetPending(pendingScope, path);
+        return outcome;
+      };
+      const ref = { table: "responses" as const, column: "file_path" as const };
+
+      let outcome: Reconciliation | null = freshlyUploaded
+        ? null
+        : await reconcileAfterFailure(supabase, ref, path);
+
+      for (let attempt = 0; attempt < 2; attempt++) {
+        if (outcome == null || outcome.state === "stale") {
+          try {
+            const data = await attach(path, fields);
+            adopt({
+              id: data.response_id,
+              rfp_id: id,
+              vendor_name: fields.vendor_name,
+              file_path: data.file_path,
+              extracted_text: null,
+              ocr_status: data.ocr_status || "unknown",
+              page_count: data.page_count || 0,
+              status: "pending",
+              created_at: new Date().toISOString(),
+            });
+            return finish("done");
+          } catch (err) {
+            outcome = await reconcileAfterFailure(supabase, ref, path);
+            if (outcome.state === "reclaimed") {
+              finish("gone");
+              throw err;
+            }
+          }
+        }
+        if (outcome.state === "processing" || outcome.state === "unknown") {
+          setEvalProgress("");
+          setError("");
+          outcome = await waitForUpload(supabase, ref, path, (elapsed) =>
+            setError(
+              `Still processing the upload (${Math.round(elapsed / 1000)}s). Leave this page open, or come back later and it will pick up where it left off.`
+            )
+          );
+          setError("");
+        }
+        if (outcome.state === "referenced") {
+          if (await adoptById(outcome.id)) return finish("done");
+          finish("gone");
+          throw new Error("The upload finished but its record could not be read.");
+        }
+        if (outcome.state === "reclaimed") {
+          finish("gone");
+          throw new Error("The upload did not complete. Please add the proposal again.");
+        }
+        // stale: loop once more and post the same path again.
+      }
+      throw new Error(
+        "The upload is taking longer than expected. Leave this page open and it will keep trying."
+      );
+    },
+    [pendingScope, supabase, attach, adopt, adoptById, id]
+  );
+
+  // Uploads left unresolved by a previous visit are settled before anything
+  // else, one by one, so the same objects are finished rather than new ones
+  // made.
+  useEffect(() => {
+    const pending = readPending(pendingScope);
+    if (pending.length === 0) return;
+    let cancelled = false;
+    (async () => {
+      setUploading(true);
+      const failures: string[] = [];
+      for (const entry of pending) {
+        if (cancelled) break;
+        try {
+          await settleUpload(entry.path, entry.fields, false);
+        } catch (err) {
+          failures.push(err instanceof Error ? err.message : "An earlier upload did not complete.");
+        }
+      }
+      if (!cancelled) {
+        if (failures.length) setError(failures[failures.length - 1]);
+        setUploading(false);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+    // Runs once per RFP: settleUpload is stable for a given id.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pendingScope]);
+
+  // -----------------------------------------------------------------------
   // Upload handler
   // -----------------------------------------------------------------------
 
@@ -221,48 +402,31 @@ export default function ResponsesPage({
         return;
       }
 
+      const name = vendorName.trim();
+
       setUploading(true);
       setError("");
       setFileError("");
-
-      const formData = new FormData();
-      formData.append("file", file);
-      formData.append("vendor_name", vendorName.trim());
-      formData.append("rfp_id", id);
-
       try {
-        const res = await fetch("/api/upload-response", {
-          method: "POST",
-          body: formData,
-        });
-
-        const data = await res.json();
-
-        if (!res.ok) {
-          throw new Error(data.error || "Failed to upload response");
+        // The PDF goes straight to storage from here; the route gets its
+        // path. See lib/storage-upload.ts for why — the short version is that
+        // the hosting platform stops request bodies at 4.5 MB, before the
+        // route runs, and proposals with drawings in them are bigger.
+        const uploaded = await uploadDocument(supabase, file, id);
+        if (!uploaded.ok) {
+          // The object may exist and could not be removed. Remembered, so the
+          // next visit settles it — reclaiming it, or finishing it if a claim
+          // turns out to have been taken.
+          if (uploaded.orphanPath) {
+            rememberPending(pendingScope, {
+              path: uploaded.orphanPath,
+              startedAt: Date.now(),
+              fields: { vendor_name: name },
+            });
+          }
+          throw new Error(uploaded.error);
         }
-
-        const newResponse: Response = {
-          id: data.response_id,
-          rfp_id: id,
-          vendor_name: vendorName.trim(),
-          file_path: data.file_path,
-          extracted_text: null,
-          ocr_status: data.ocr_status || "unknown",
-          page_count: data.page_count || 0,
-          status: "pending",
-          created_at: new Date().toISOString(),
-        };
-
-        setResponses((prev) => [...prev, newResponse]);
-        setVendorName("");
-        setFile(null);
-
-        // Reset the file input so the same file can be re-selected if needed
-        const fileInput = document.getElementById(
-          "file-input"
-        ) as HTMLInputElement | null;
-        if (fileInput) fileInput.value = "";
+        await settleUpload(uploaded.path, { vendor_name: name }, true);
       } catch (err) {
         setError(
           err instanceof Error ? err.message : "Something went wrong during upload"
@@ -271,7 +435,7 @@ export default function ResponsesPage({
         setUploading(false);
       }
     },
-    [file, vendorName, id]
+    [file, vendorName, id, supabase, settleUpload, pendingScope]
   );
 
   // -----------------------------------------------------------------------
@@ -398,9 +562,12 @@ export default function ResponsesPage({
         });
 
         if (!res.ok) {
-          const data = await res.json();
+          const result = await readApiResponse(
+            res,
+            `Failed to evaluate ${response.vendor_name}`
+          );
           throw new Error(
-            data.error || `Failed to evaluate ${response.vendor_name}`
+            result.ok ? `Failed to evaluate ${response.vendor_name}` : result.error
           );
         }
 

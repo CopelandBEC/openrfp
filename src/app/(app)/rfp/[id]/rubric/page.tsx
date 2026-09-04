@@ -22,6 +22,7 @@ import {
   WorkingState,
 } from "@/components/stage-state";
 import { ScoreBar } from "@/components/viz/score-bar";
+import { readApiResponse } from "@/lib/api-response";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -166,12 +167,14 @@ export default function RubricPage({
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ rfp_id: id }),
       });
-      if (!res.ok) {
-        const data = await res.json();
-        throw new Error(data.error || "Failed to generate rubric");
+      const result = await readApiResponse<{ rubric: Record<string, unknown> }>(
+        res,
+        "Failed to generate rubric"
+      );
+      if (!result.ok) {
+        throw new Error(result.error);
       }
-      const data = await res.json();
-      setRubric(normalizeRubric(data.rubric));
+      setRubric(normalizeRubric(result.data.rubric));
       setHasEdits(false);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Something went wrong");

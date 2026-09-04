@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
 import { FileTextIcon, UploadIcon } from "lucide-react";
 import { Button } from "@/components/ui/button";
@@ -10,15 +10,135 @@ import { Label } from "@/components/ui/label";
 import { AppHeader, PageIntro } from "@/components/app-shell";
 import { ErrorState } from "@/components/stage-state";
 import { cn } from "@/lib/utils";
+import { createClient } from "@/lib/supabase/client";
+import { readApiResponse } from "@/lib/api-response";
+import {
+  forgetPending,
+  readPending,
+  reconcileAfterFailure,
+  rememberPending,
+  uploadDocument,
+  waitForUpload,
+  type Reconciliation,
+} from "@/lib/storage-upload";
 
 export default function NewRfpPage() {
   const router = useRouter();
+  const supabase = useMemo(() => createClient(), []);
   const [file, setFile] = useState<File | null>(null);
   const [title, setTitle] = useState("");
   const [description, setDescription] = useState("");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
   const [dragActive, setDragActive] = useState(false);
+
+  const pendingScope = "rfp";
+
+  /** Ask the route to create the RFP from an object already in storage. */
+  const create = useCallback(
+    async (path: string, fields: Record<string, string>) => {
+      const res = await fetch("/api/upload-rfp", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          file_path: path,
+          title: fields.title,
+          description: fields.description ?? "",
+        }),
+      });
+      const result = await readApiResponse<{ rfp_id: string }>(
+        res,
+        "Failed to upload"
+      );
+      if (!result.ok) throw new Error(result.error);
+      return result.data.rfp_id;
+    },
+    []
+  );
+
+  /** See the note on `settleUpload` in the responses screen; same shape. */
+  const settleUpload = useCallback(
+    async (
+      path: string,
+      fields: Record<string, string>,
+      freshlyUploaded: boolean
+    ): Promise<string> => {
+      rememberPending(pendingScope, { path, startedAt: Date.now(), fields });
+      const ref = { table: "rfps" as const, column: "rfp_file_path" as const };
+      let outcome: Reconciliation | null = freshlyUploaded
+        ? null
+        : await reconcileAfterFailure(supabase, ref, path);
+
+      for (let attempt = 0; attempt < 2; attempt++) {
+        if (outcome == null || outcome.state === "stale") {
+          try {
+            const rfpId = await create(path, fields);
+            forgetPending(pendingScope, path);
+            return rfpId;
+          } catch (err) {
+            outcome = await reconcileAfterFailure(supabase, ref, path);
+            if (outcome.state === "reclaimed") {
+              forgetPending(pendingScope, path);
+              throw err;
+            }
+          }
+        }
+        if (outcome.state === "processing" || outcome.state === "unknown") {
+          outcome = await waitForUpload(supabase, ref, path, (elapsed) =>
+            setError(
+              `Still processing the upload (${Math.round(elapsed / 1000)}s). Leave this page open, or come back later and it will pick up where it left off.`
+            )
+          );
+          setError("");
+        }
+        if (outcome.state === "referenced") {
+          forgetPending(pendingScope, path);
+          return outcome.id;
+        }
+        if (outcome.state === "reclaimed") {
+          forgetPending(pendingScope, path);
+          throw new Error("The upload did not complete. Please upload the RFP again.");
+        }
+      }
+      throw new Error(
+        "The upload is taking longer than expected. Leave this page open and it will keep trying."
+      );
+    },
+    [supabase, create]
+  );
+
+  useEffect(() => {
+    const pending = readPending(pendingScope);
+    if (pending.length === 0) return;
+    let cancelled = false;
+    (async () => {
+      setLoading(true);
+      let firstRfpId: string | null = null;
+      let lastFailure: string | null = null;
+      // Settle every remembered upload; go on to the first RFP that results.
+      for (const entry of pending) {
+        if (cancelled) break;
+        try {
+          const rfpId = await settleUpload(entry.path, entry.fields, false);
+          firstRfpId ??= rfpId;
+        } catch (err) {
+          lastFailure = err instanceof Error ? err.message : "An earlier upload did not complete.";
+        }
+      }
+      if (cancelled) return;
+      if (firstRfpId) {
+        router.push(`/rfp/${firstRfpId}/rubric?new=1`);
+        return;
+      }
+      if (lastFailure) setError(lastFailure);
+      setLoading(false);
+    })();
+    return () => {
+      cancelled = true;
+    };
+    // Once, on mount.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -27,25 +147,29 @@ export default function NewRfpPage() {
     setLoading(true);
     setError("");
 
-    const formData = new FormData();
-    formData.append("file", file);
-    formData.append("title", title);
-    formData.append("description", description);
-
     try {
-      const res = await fetch("/api/upload-rfp", {
-        method: "POST",
-        body: formData,
-      });
-
-      if (!res.ok) {
-        const data = await res.json();
-        throw new Error(data.error || "Failed to upload");
+      // Straight to storage, then the path to the route; see
+      // lib/storage-upload.ts for why the file no longer rides in the request.
+      const uploaded = await uploadDocument(supabase, file, null);
+      if (!uploaded.ok) {
+        // See the responses screen: an object that may exist and could not be
+        // removed is remembered for the next visit to settle.
+        if (uploaded.orphanPath) {
+          rememberPending(pendingScope, {
+            path: uploaded.orphanPath,
+            startedAt: Date.now(),
+            fields: { title, description },
+          });
+        }
+        throw new Error(uploaded.error);
       }
-
-      const data = await res.json();
+      const rfpId = await settleUpload(
+        uploaded.path,
+        { title, description },
+        true
+      );
       // Navigate to the rubric generation step
-      router.push(`/rfp/${data.rfp_id}/rubric?new=1`);
+      router.push(`/rfp/${rfpId}/rubric?new=1`);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Something went wrong");
     } finally {
