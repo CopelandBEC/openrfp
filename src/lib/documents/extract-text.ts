@@ -2,6 +2,8 @@ import { extractPdfText } from "@/lib/pdf/extract-text";
 import { extractDocxText } from "@/lib/documents/extract-docx";
 import { kindFromName, type DocumentKind } from "@/lib/documents/types";
 
+export { ZipTooLargeError } from "@/lib/documents/zip-bounds";
+
 export interface DocumentExtractionResult {
   kind: DocumentKind;
   text: string;

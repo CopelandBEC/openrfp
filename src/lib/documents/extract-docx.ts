@@ -1,5 +1,6 @@
 import JSZip from "jszip";
 import mammoth from "mammoth";
+import { assertZipWithinBounds } from "@/lib/documents/zip-bounds";
 
 export interface DocxExtractionResult {
   text: string;
@@ -22,11 +23,16 @@ export interface DocxExtractionResult {
  *
  * Images are dropped rather than inlined: mammoth's default embeds them as
  * base64, which would balloon the intermediate string for no text.
+ *
+ * The archive is measured before anything inflates it in earnest; see
+ * zip-bounds.ts. Its errors propagate: the route maps a too-large archive to
+ * its own message and anything else to "could not be read".
  */
 export async function extractDocxText(
   data: Uint8Array
 ): Promise<DocxExtractionResult> {
   const buffer = Buffer.from(data.buffer, data.byteOffset, data.byteLength);
+  assertZipWithinBounds(buffer);
 
   const [{ value: html }, pageCount] = await Promise.all([
     mammoth.convertToHtml(

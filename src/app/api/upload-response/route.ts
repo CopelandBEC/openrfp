@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { createClient } from "@/lib/supabase/server";
 import {
   UnsupportedDocumentError,
+  ZipTooLargeError,
   extractDocumentText,
 } from "@/lib/documents/extract-text";
 import { isGuest } from "@/lib/auth/guest";
@@ -148,6 +149,18 @@ export async function POST(request: NextRequest) {
             "That file is not a PDF or a Word (.docx) document. Older .doc files need to be saved as .docx or exported to PDF first.",
         },
         { status: 400 }
+      );
+    }
+    if (err instanceof ZipTooLargeError) {
+      // Deliberate or not, a file that inflates this far is not one this
+      // route can hold. Logged, since a real proposal never trips it.
+      console.error("Refused oversized document:", err.message);
+      return NextResponse.json(
+        {
+          error:
+            "That Word file expands to more than can be processed. Export it to PDF and upload that instead.",
+        },
+        { status: 413 }
       );
     }
     console.error("Failed to read document:", err instanceof Error ? err.message : err);
