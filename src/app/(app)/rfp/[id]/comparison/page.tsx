@@ -614,7 +614,7 @@ export default function ComparisonPage({
       // The overall did not move, so say what did rather than nothing.
       reasons.push(
         rankingSaw == null
-          ? "This ranking does not record which scores it saw."
+          ? "This ranking was saved before OpenRFP recorded which scores a ranking saw, so it cannot be checked against them. Re-ranking once fixes that."
           : "A criterion score was changed after this ranking without moving the total."
       );
     }

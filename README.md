@@ -75,7 +75,10 @@ changes without recreating the project.
 current ranking from one that predates a score or a rubric change, and the
 scoring route stamps each evaluation with the rubric it scored against.
 PostgREST rejects the whole query when a selected column is missing — so until
-the migration is applied the dashboard cannot list any RFPs and scoring fails. It says so, with the
+the migration is applied the dashboard cannot list any RFPs and scoring fails.
+After it is applied, every existing ranking reads as out of date once — nothing
+recorded which scores it saw, and the migration does not pretend to know — and
+one re-rank per RFP clears it. It says so, with the
 database's message, rather than rendering its empty state; nothing is lost and
 applying the schema restores them. The backfill sets `updated_at` from
 `created_at`, so existing rows read as last changed when they were made rather

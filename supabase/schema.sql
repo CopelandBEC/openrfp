@@ -132,18 +132,18 @@ alter table public.comparisons alter column updated_at set not null;
 -- committed last carries a timestamp older than a watermark taken between the
 -- two. Recording each version read makes no ordering assumption at all.
 --
--- Backfilled from the current evaluations, which reads existing rankings as
--- having seen the scores as they are now; the best available answer.
+-- Deliberately not backfilled. Nothing recorded what an existing ranking
+-- saw, and `evaluations.updated_at` for old rows is itself a backfill from
+-- `created_at`, so a map built now would assert that every pre-migration
+-- override happened before the ranking — the one thing it cannot know. Null
+-- means "does not say", the screens report that as out of date, and one
+-- re-rank records the fact properly. (The rubric stamp on evaluations below
+-- *is* backfilled, on the opposite trade: leaving it unknown would send every
+-- existing owner to re-score every proposal, and a re-rank is one call.)
 alter table public.comparisons
   drop column if exists evaluations_as_of;
 alter table public.comparisons
   add column if not exists evaluation_revisions jsonb;
-update public.comparisons c
-  set evaluation_revisions = coalesce(
-    (select jsonb_object_agg(e.response_id, e.updated_at)
-       from public.evaluations e where e.rfp_id = c.rfp_id),
-    '{}'::jsonb)
-  where c.evaluation_revisions is null;
 
 -- When the rubric's criteria last changed — not when its row was last
 -- written. Accepting a rubric flips `edited_by_user` and rewrites `criteria`

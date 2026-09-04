@@ -192,7 +192,24 @@ export function exportCsv(data: ReportData) {
     vendor.weaknesses.join(" | "),
   ]);
 
-  const csv = [header, ...rows]
+  // The spreadsheet carries the same warning the report does. Without it, a
+  // CSV opened in a month pairs live scores with a rank order and rationale
+  // from before the change, and nothing on the sheet says so. Appended after
+  // a blank row so the data block above still parses as a plain table.
+  const notice: (string | number)[][] = data.rankingStale
+    ? [
+        [],
+        [
+          `This ranking is out of date. ${
+            data.scoresCurrent === false
+              ? "Not every score here is current."
+              : "The scores are current; the rank order and rationale predate a change."
+          } ${(data.stalenessReasons ?? []).join(" ")}`.trim(),
+        ],
+      ]
+    : [];
+
+  const csv = [header, ...rows, ...notice]
     .map((row) => row.map(csvCell).join(","))
     .join("\r\n");
 
