@@ -31,6 +31,8 @@ export default function NewRfpPage() {
     setLoading(true);
     setError("");
 
+    // See the note on `orphan` in responses/page.tsx.
+    let orphan: string | null = null;
     try {
       // Straight to storage, then the path to the route; see
       // lib/storage-upload.ts for why the file no longer rides in the request.
@@ -38,6 +40,7 @@ export default function NewRfpPage() {
       if (!uploaded.ok) {
         throw new Error(uploaded.error);
       }
+      orphan = uploaded.path;
 
       const res = await fetch("/api/upload-rfp", {
         method: "POST",
@@ -54,12 +57,13 @@ export default function NewRfpPage() {
         "Failed to upload"
       );
       if (!result.ok) {
-        await discardDocument(supabase, uploaded.path);
         throw new Error(result.error);
       }
+      orphan = null;
       // Navigate to the rubric generation step
       router.push(`/rfp/${result.data.rfp_id}/rubric?new=1`);
     } catch (err) {
+      if (orphan) await discardDocument(supabase, orphan);
       setError(err instanceof Error ? err.message : "Something went wrong");
     } finally {
       setLoading(false);

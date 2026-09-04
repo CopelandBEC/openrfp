@@ -227,6 +227,11 @@ export default function ResponsesPage({
       setError("");
       setFileError("");
 
+      // Set once the object exists and cleared once a row references it, so
+      // that whatever fails in between — a refused request or one that never
+      // completes — the object is reclaimed rather than left with no row and,
+      // for a guest, occupying one of their capped slots.
+      let orphan: string | null = null;
       try {
         // The PDF goes straight to storage from here; the route gets its
         // path. See lib/storage-upload.ts for why — the short version is that
@@ -236,6 +241,7 @@ export default function ResponsesPage({
         if (!uploaded.ok) {
           throw new Error(uploaded.error);
         }
+        orphan = uploaded.path;
 
         const res = await fetch("/api/upload-response", {
           method: "POST",
@@ -255,11 +261,10 @@ export default function ResponsesPage({
         }>(res, "Failed to upload response");
 
         if (!result.ok) {
-          // The route removes the object when it fails after reading it; if
-          // the request never got that far, nothing else will.
-          await discardDocument(supabase, uploaded.path);
           throw new Error(result.error);
         }
+        // The row now references the object.
+        orphan = null;
         const data = result.data;
 
         const newResponse: Response = {
@@ -284,6 +289,10 @@ export default function ResponsesPage({
         ) as HTMLInputElement | null;
         if (fileInput) fileInput.value = "";
       } catch (err) {
+        // The route removes the object when it fails after reading it; a
+        // request that was refused earlier or never completed leaves that to
+        // us. Removing an already-removed object is harmless.
+        if (orphan) await discardDocument(supabase, orphan);
         setError(
           err instanceof Error ? err.message : "Something went wrong during upload"
         );

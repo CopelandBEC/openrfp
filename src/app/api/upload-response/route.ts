@@ -46,6 +46,23 @@ export async function POST(request: NextRequest) {
     );
   }
 
+  // A path is attached once. Without this, the same owner-held path could be
+  // posted again and again, each time re-reading up to 25 MB, parsing it and
+  // inserting another row; checked before the read so a repeat costs nothing,
+  // and backed by a unique index on `file_path` so two concurrent requests
+  // cannot both get through.
+  const { data: existing } = await supabase
+    .from("responses")
+    .select("id")
+    .eq("file_path", filePath as string)
+    .maybeSingle();
+  if (existing) {
+    return NextResponse.json(
+      { error: "That file has already been added to this RFP." },
+      { status: 409 }
+    );
+  }
+
   const read = await readOwnedDocument(supabase, user, filePath, rfpId);
   if (!read.ok) {
     return NextResponse.json({ error: read.error }, { status: read.status });
@@ -76,6 +93,14 @@ export async function POST(request: NextRequest) {
     .single();
 
   if (responseError) {
+    // Lost a race with an identical request: the winner's row references
+    // this object, so it must not be removed.
+    if (responseError.code === "23505") {
+      return NextResponse.json(
+        { error: "That file has already been added to this RFP." },
+        { status: 409 }
+      );
+    }
     await supabase.storage.from(BUCKET).remove([fileName]);
 
     // A guest at their response cap trips the row-level security check on

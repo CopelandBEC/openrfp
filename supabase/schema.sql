@@ -188,6 +188,18 @@ update public.evaluations e
   from public.rubrics r
   where r.rfp_id = e.rfp_id and e.rubric_updated_at is null;
 
+-- One row per uploaded object. The upload routes receive a storage path from
+-- the browser and check for an existing row before doing any work, but two
+-- concurrent requests for the same path would both pass that check; these
+-- make the second insert fail instead, and the routes answer 409 without
+-- removing the object the first row references. Paths carry a millisecond
+-- timestamp, so existing rows are already distinct.
+create unique index if not exists responses_file_path_key
+  on public.responses (file_path);
+create unique index if not exists rfps_rfp_file_path_key
+  on public.rfps (rfp_file_path)
+  where rfp_file_path is not null;
+
 -- ============================================
 -- Audit Log
 -- ============================================

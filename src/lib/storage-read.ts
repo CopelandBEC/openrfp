@@ -22,16 +22,18 @@ export async function readOwnedDocument(
   path: unknown,
   expectedFolder: string | null
 ): Promise<ReadOutcome> {
-  if (typeof path !== "string" || path.length === 0 || path.includes("..")) {
+  if (typeof path !== "string" || path.length === 0) {
     return { ok: false, status: 400, error: "A file path is required." };
   }
   const segments = path.split("/");
   const expected = expectedFolder ? 3 : 2;
+  // Traversal is a *segment* of `.` or `..`, not the substring: a proposal
+  // called "bid..final.pdf" is a legitimate name inside the last segment.
   if (
     segments.length !== expected ||
+    segments.some((s) => s === "" || s === "." || s === "..") ||
     segments[0] !== user.id ||
-    (expectedFolder && segments[1] !== expectedFolder) ||
-    segments[segments.length - 1].length === 0
+    (expectedFolder && segments[1] !== expectedFolder)
   ) {
     return {
       ok: false,

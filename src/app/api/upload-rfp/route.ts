@@ -44,6 +44,20 @@ export async function POST(request: NextRequest) {
     );
   }
 
+  // A path creates one RFP; see upload-response for why this is checked
+  // before the read and backed by a unique index.
+  const { data: existing } = await supabase
+    .from("rfps")
+    .select("id")
+    .eq("rfp_file_path", filePath as string)
+    .maybeSingle();
+  if (existing) {
+    return NextResponse.json(
+      { error: "That file has already been used to create an RFP." },
+      { status: 409 }
+    );
+  }
+
   const read = await readOwnedDocument(supabase, user, filePath, null);
   if (!read.ok) {
     return NextResponse.json({ error: read.error }, { status: read.status });
@@ -73,6 +87,12 @@ export async function POST(request: NextRequest) {
     .single();
 
   if (rfpError) {
+    if (rfpError.code === "23505") {
+      return NextResponse.json(
+        { error: "That file has already been used to create an RFP." },
+        { status: 409 }
+      );
+    }
     await supabase.storage.from(BUCKET).remove([fileName]);
 
     // A guest who has hit their RFP cap trips the row-level security check on
