@@ -69,27 +69,28 @@ async function readPageCount(buffer: Buffer): Promise<number> {
  * Walked tag by tag with a depth counter rather than matched with regular
  * expressions, because Word allows a table inside a table cell and mammoth
  * emits it as nested `<td>`s; a non-greedy match pairs the outer cell's open
- * tag with the first inner close and the rest of the row falls apart. Here a
+ * tag with the first inner close and the rest of the row falls apart. A
  * cell's contents are flattened onto its line however deep they go: nested
  * cells joined with " / ", nested rows with "; ", and the outer cells with
- * " | " as before.
+ * " | ".
+ *
+ * Delimiters are written when a cell or row *opens*, between it and the one
+ * before, never when one closes. That keeps an empty cell in the row as
+ * "Item | | $100" rather than letting it vanish and shift every later value
+ * a column to the left.
  */
 const BLOCK_TAGS = new Set([
   "p", "h1", "h2", "h3", "h4", "h5", "h6", "li", "div",
-  "table", "tbody", "thead", "ul", "ol", "blockquote", "pre",
+  "tbody", "thead", "ul", "ol", "blockquote", "pre",
 ]);
-
-const SEPARATORS = new Set([" | ", " / ", "; ", " "]);
 
 export function htmlToText(html: string): string {
   const out: string[] = [];
   let cellDepth = 0;
-  // A separator replaces any separators already trailing, so a nested row's
-  // end reads "a / b; c / d", not "a / b / ; c / d / ;".
-  const separate = (sep: string) => {
-    while (out.length > 0 && SEPARATORS.has(out[out.length - 1])) out.pop();
-    out.push(sep);
-  };
+  /** Rows seen so far in each open table, innermost last. */
+  const tables: number[] = [];
+  /** Cells seen so far in each open row, innermost last. */
+  const rows: number[] = [];
 
   for (const m of html.matchAll(/<(\/?)([a-zA-Z][a-zA-Z0-9]*)\b[^>]*>|[^<]+/g)) {
     if (m[2] === undefined) {
@@ -100,33 +101,43 @@ export function htmlToText(html: string): string {
     const closing = m[1] === "/";
     const tag = m[2].toLowerCase();
 
-    if (tag === "td" || tag === "th") {
+    if (tag === "table") {
       if (!closing) {
+        tables.push(0);
+      } else {
+        tables.pop();
+        // A blank line after an outer table, so prose does not read as a row.
+        out.push(cellDepth > 0 ? " " : "\n\n");
+      }
+    } else if (tag === "tr") {
+      if (!closing) {
+        const seen = tables.length > 0 ? tables[tables.length - 1]++ : 0;
+        if (seen > 0) out.push(cellDepth > 0 ? "; " : "\n");
+        rows.push(0);
+      } else {
+        rows.pop();
+      }
+    } else if (tag === "td" || tag === "th") {
+      if (!closing) {
+        const seen = rows.length > 0 ? rows[rows.length - 1]++ : 0;
+        if (seen > 0) out.push(cellDepth > 0 ? " / " : " | ");
         cellDepth++;
       } else if (cellDepth > 0) {
         cellDepth--;
-        separate(cellDepth === 0 ? " | " : " / ");
       }
-    } else if (tag === "tr") {
-      if (closing) separate(cellDepth > 0 ? "; " : "\n");
     } else if (tag === "br") {
-      separate(cellDepth > 0 ? " " : "\n");
+      out.push(cellDepth > 0 ? " " : "\n");
     } else if (tag === "li" && !closing) {
       if (cellDepth === 0) out.push("- ");
     } else if (closing && BLOCK_TAGS.has(tag)) {
-      separate(cellDepth > 0 ? " " : "\n");
+      out.push(cellDepth > 0 ? " " : "\n");
     }
   }
 
   return out
     .join("")
     .split("\n")
-    .map((line) =>
-      line
-        .replace(/[ \t]{2,}/g, " ")
-        .replace(/\s*(\||\/|;)\s*$/, "")
-        .trimEnd()
-    )
+    .map((line) => line.replace(/[ \t]{2,}/g, " ").replace(/ ; /g, "; ").trim())
     .join("\n")
     .replace(/\n{3,}/g, "\n\n")
     .trim();
