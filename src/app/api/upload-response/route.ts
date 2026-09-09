@@ -157,7 +157,7 @@ export async function POST(request: NextRequest) {
       // route can hold. Logged, since a real proposal never trips it.
       console.error("Refused oversized document:", err.message);
       return NextResponse.json(
-        { error: documentTooLargeMessage(check.fileName) },
+        { error: documentTooLargeMessage(err) },
         { status: 413 }
       );
     }

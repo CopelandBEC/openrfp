@@ -143,7 +143,8 @@ export function htmlToText(html: string): string {
     written += chars;
     if (written > MAX_TEXT_CHARS) {
       throw new DocumentTooLargeError(
-        `Document renders to more than ${MAX_TEXT_CHARS} characters of text`
+        `Document renders to more than ${MAX_TEXT_CHARS} characters of text`,
+        "shorten"
       );
     }
   };
@@ -178,7 +179,8 @@ export function htmlToText(html: string): string {
         newline();
         if (tables.length >= MAX_TABLE_DEPTH) {
           throw new DocumentTooLargeError(
-            `Tables nested more than ${MAX_TABLE_DEPTH} deep`
+            `Tables nested more than ${MAX_TABLE_DEPTH} deep`,
+            "export-to-pdf"
           );
         }
         tables.push({ rows: [], carry: new Map(), row: null });
@@ -287,7 +289,8 @@ function assertTreeWithinBudget(document: unknown): void {
     if (typeof node.anchor === "string") chars += node.anchor.length;
     if (chars > MAX_TEXT_CHARS) {
       throw new DocumentTooLargeError(
-        `Document holds more than ${MAX_TEXT_CHARS} characters of text and link targets`
+        `Document holds more than ${MAX_TEXT_CHARS} characters of text and link targets`,
+        "export-to-pdf"
       );
     }
     // Pushed one at a time: spreading a million children into one call is

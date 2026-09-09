@@ -8,11 +8,16 @@ export interface PdfExtractionResult {
 }
 
 /**
- * Pages are extracted this many at a time. Each batch is charged against the
- * text budget before the next is parsed, so a document built to render to
- * gigabytes is refused after one batch rather than materialised whole.
+ * Pages are extracted this many at a time, and the running total is charged
+ * against the text budget between batches. One page per batch: pdf-parse
+ * walks its page list once per call, which costs about a tenth over one
+ * call at twenty thousand pages, measured, and every page in a batch is
+ * text built before the budget gets a look. What
+ * one page may hold is still bounded only by pdf.js, which decodes its
+ * content streams whole; that needs pdf.js driven directly, and is tracked
+ * separately.
  */
-const PAGES_PER_BATCH = 25;
+const PAGES_PER_BATCH = 1;
 
 /**
  * Extract text from a PDF using pdf-parse (PDFParse class).
@@ -27,8 +32,12 @@ const PAGES_PER_BATCH = 25;
  * could measure it. Pages are asked for in batches instead, and the running
  * total is charged against the budget shared with the .docx path. The batch
  * texts are joined exactly as pdf-parse joins them, so the output is the
- * same as one call would give. What one page may hold is bounded only by
- * pdf.js itself, which decodes a page's content streams whole.
+ * same as one call would give.
+ *
+ * pdf.js transfers the bytes it is given to its worker, which leaves the
+ * caller's array detached and empty. It is handed a copy so the caller's
+ * bytes are still there afterwards; nothing reads them today, but a hash or
+ * a re-upload added later would otherwise see nothing and not know it.
  */
 export async function extractPdfText(
   data: Uint8Array
@@ -43,7 +52,7 @@ export async function extractPdfText(
   try {
     const { PDFParse } = await import("pdf-parse");
 
-    parser = new PDFParse({ data });
+    parser = new PDFParse({ data: data.slice() });
 
     const parts: string[] = [];
     let chars = 0;
@@ -54,7 +63,8 @@ export async function extractPdfText(
       chars += batch.text.length;
       if (chars > MAX_TEXT_CHARS) {
         throw new DocumentTooLargeError(
-          `PDF renders to more than ${MAX_TEXT_CHARS} characters of text`
+          `PDF renders to more than ${MAX_TEXT_CHARS} characters of text`,
+          "shorten"
         );
       }
       parts.push(batch.text);

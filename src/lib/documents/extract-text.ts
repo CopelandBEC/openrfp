@@ -1,8 +1,9 @@
 import { extractPdfText } from "@/lib/pdf/extract-text";
 import { extractDocxText } from "@/lib/documents/extract-docx";
 import { kindFromName, type DocumentKind } from "@/lib/documents/types";
+import { DocumentTooLargeError } from "@/lib/documents/limits";
 
-export { DocumentTooLargeError } from "@/lib/documents/limits";
+export { DocumentTooLargeError };
 
 export interface DocumentExtractionResult {
   kind: DocumentKind;
@@ -25,16 +26,19 @@ export class UnsupportedDocumentError extends Error {
 }
 
 /**
- * What to tell the user when a document is refused as too large. A Word
- * file most often trips the zip caps, and its PDF export is a fine upload;
- * a PDF that trips the text budget has no such second form, so the advice
- * is to split it. The name is a hint for wording only — the parsers decide
- * what the bytes are.
+ * What to tell the user when a document is refused as too large. The error
+ * says what would help — see TooLargeRemedy — because the file name cannot:
+ * a Word file that trips the text budget renders the same text as a PDF and
+ * would be refused again, and PDF bytes may arrive under a .docx name.
+ *
+ * A response holds one file per vendor, so "split it" is not advice anyone
+ * can follow; a proposal past ten million characters is carrying bulk that
+ * is not the proposal, and that is what to leave out.
  */
-export function documentTooLargeMessage(fileName: string): string {
-  return kindFromName(fileName) === "docx"
+export function documentTooLargeMessage(err: DocumentTooLargeError): string {
+  return err.remedy === "export-to-pdf"
     ? "That Word file expands to more than can be processed. Export it to PDF and upload that instead."
-    : "That file holds more text than can be processed at once. Split it into smaller documents and upload those.";
+    : "That document holds more text than can be processed at once, far more than a proposal needs. Upload a version without the bulk attachments or appendices.";
 }
 
 /** Below this many characters per page, treat the document as unreadable. */

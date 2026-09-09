@@ -56,7 +56,7 @@ export const MAX_XML_NODES = 1_200_000;
 
 export class ZipTooLargeError extends DocumentTooLargeError {
   constructor(detail: string) {
-    super(`Zip expands beyond the limit: ${detail}`);
+    super(`Zip expands beyond the limit: ${detail}`, "export-to-pdf");
     this.name = "ZipTooLargeError";
   }
 }
