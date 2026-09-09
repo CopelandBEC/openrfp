@@ -23,9 +23,16 @@ export const MAX_EXPANDED_BYTES = 256 * 1024 * 1024;
 /**
  * Bytes bound bytes, not nodes: sixty megabytes of `<w:p/>` is ten million
  * elements, each a DOM object once mammoth's XML parser has built it, and
- * none of them text. The inflated XML parts are already in hand here, so
- * their tags are counted — every `<` is a start tag, an end tag or a
- * comment — and the total capped.
+ * none of them text. The inflated parts are already in hand here, so their
+ * tags are counted — every `<` is a start tag, an end tag or a comment —
+ * and the total capped.
+ *
+ * Every part is counted, not only those named `.xml`. mammoth chooses what
+ * to parse by following the package relationships, and a relationship may
+ * point the main document at `word/payload.bin`; the name says nothing. In
+ * a binary part such as an image about one byte in 256 happens to be `<`,
+ * which for the largest upload the storage rules admit is under a hundred
+ * thousand phantom tags, well inside the caps' margin.
  *
  * The cap is set by what mammoth can parse in a serverless function, not by
  * what a document might hold. Measured: 720 k tags of text paragraphs parse
@@ -189,7 +196,7 @@ function readCentralDirectory(buf: Buffer): Entry[] {
 
 /**
  * Inflate one entry under the cap and return how many bytes it really is,
- * and, for an XML part, how many tags and attributes it holds.
+ * and how many tags and attributes it holds.
  */
 function measureEntry(buf: Buffer, e: Entry): Measured {
   const h = e.localHeaderOffset;
@@ -204,10 +211,9 @@ function measureEntry(buf: Buffer, e: Entry): Measured {
     throw new ZipCorruptError("entry data runs past the end of the file");
   }
 
-  const isXml = /\.(xml|rels)$/i.test(e.name);
   if (e.method === METHOD_STORED) {
     const data = buf.subarray(start, end);
-    return isXml ? countNodes(data) : { bytes: data.length, tags: 0, attributes: 0 };
+    return countNodes(data);
   }
   if (e.method !== METHOD_DEFLATE) {
     // Neither JSZip nor Word produces anything else; refuse rather than guess.
@@ -217,7 +223,7 @@ function measureEntry(buf: Buffer, e: Entry): Measured {
     const data = inflateRawSync(buf.subarray(start, end), {
       maxOutputLength: MAX_ENTRY_BYTES,
     });
-    return isXml ? countNodes(data) : { bytes: data.length, tags: 0, attributes: 0 };
+    return countNodes(data);
   } catch (err) {
     if ((err as NodeJS.ErrnoException)?.code === "ERR_BUFFER_TOO_LARGE") {
       throw new ZipTooLargeError(`an entry inflates past ${MAX_ENTRY_BYTES} bytes`);
