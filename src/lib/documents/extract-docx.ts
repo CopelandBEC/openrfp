@@ -1,6 +1,7 @@
 import JSZip from "jszip";
 import mammoth from "mammoth";
-import { DocumentTooLargeError, assertZipWithinBounds } from "@/lib/documents/zip-bounds";
+import { assertZipWithinBounds } from "@/lib/documents/zip-bounds";
+import { DocumentTooLargeError, MAX_TEXT_CHARS } from "@/lib/documents/limits";
 
 export interface DocxExtractionResult {
   text: string;
@@ -109,8 +110,6 @@ async function readPageCount(buffer: Buffer): Promise<number> {
  * is spent. Nesting is capped too; nothing legitimate nests tables eight
  * deep.
  */
-/** Well above any real proposal (a thousand pages is a few million). */
-export const MAX_TEXT_CHARS = 10_000_000;
 const MAX_TABLE_DEPTH = 8;
 
 const BLOCK_TAGS = new Set([

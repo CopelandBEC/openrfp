@@ -2,7 +2,7 @@ import { extractPdfText } from "@/lib/pdf/extract-text";
 import { extractDocxText } from "@/lib/documents/extract-docx";
 import { kindFromName, type DocumentKind } from "@/lib/documents/types";
 
-export { DocumentTooLargeError } from "@/lib/documents/zip-bounds";
+export { DocumentTooLargeError } from "@/lib/documents/limits";
 
 export interface DocumentExtractionResult {
   kind: DocumentKind;
@@ -22,6 +22,19 @@ export class UnsupportedDocumentError extends Error {
     super("Unsupported document type");
     this.name = "UnsupportedDocumentError";
   }
+}
+
+/**
+ * What to tell the user when a document is refused as too large. A Word
+ * file most often trips the zip caps, and its PDF export is a fine upload;
+ * a PDF that trips the text budget has no such second form, so the advice
+ * is to split it. The name is a hint for wording only — the parsers decide
+ * what the bytes are.
+ */
+export function documentTooLargeMessage(fileName: string): string {
+  return kindFromName(fileName) === "docx"
+    ? "That Word file expands to more than can be processed. Export it to PDF and upload that instead."
+    : "That file holds more text than can be processed at once. Split it into smaller documents and upload those.";
 }
 
 /** Below this many characters per page, treat the document as unreadable. */
