@@ -34,6 +34,17 @@ export const MAX_EXPANDED_BYTES = 256 * 1024 * 1024;
  * heavily formatted proposal reaches it sooner, and is told to export to PDF.
  */
 export const MAX_XML_TAGS = 600_000;
+/**
+ * Attributes are nodes too. Seventy thousand elements carrying seven million
+ * attributes between them is a small archive under the tag cap, and every
+ * attribute is an object the parser has to build. Measured under the same
+ * 512 MB heap: a million attributes on a few paragraphs parse, two million
+ * do not; 600 k tags with 600 k attributes parse, with a million they do
+ * not. An attribute costs about half an element, so the two are charged to
+ * one budget. Word writes roughly two attributes for every three tags, so
+ * a plain document reaches the tag cap first.
+ */
+export const MAX_XML_NODES = 1_200_000;
 
 /** A document that would take more than one request can hold, however so. */
 export class DocumentTooLargeError extends Error {
@@ -89,6 +100,7 @@ export function assertZipWithinBounds(buf: Buffer): void {
 
   let actualTotal = 0;
   let tags = 0;
+  let attributes = 0;
   for (const e of entries) {
     const measured = measureEntry(buf, e);
     actualTotal += measured.bytes;
@@ -98,6 +110,12 @@ export function assertZipWithinBounds(buf: Buffer): void {
     tags += measured.tags;
     if (tags > MAX_XML_TAGS) {
       throw new ZipTooLargeError(`XML parts hold more than ${MAX_XML_TAGS} tags`);
+    }
+    attributes += measured.attributes;
+    if (tags + attributes > MAX_XML_NODES) {
+      throw new ZipTooLargeError(
+        `XML parts hold more than ${MAX_XML_NODES} tags and attributes together`
+      );
     }
   }
 }
@@ -171,9 +189,9 @@ function readCentralDirectory(buf: Buffer): Entry[] {
 
 /**
  * Inflate one entry under the cap and return how many bytes it really is,
- * and, for an XML part, how many tags it holds.
+ * and, for an XML part, how many tags and attributes it holds.
  */
-function measureEntry(buf: Buffer, e: Entry): { bytes: number; tags: number } {
+function measureEntry(buf: Buffer, e: Entry): Measured {
   const h = e.localHeaderOffset;
   if (h + 30 > buf.length || buf.readUInt32LE(h) !== LOCAL_SIGNATURE) {
     throw new ZipCorruptError("bad local file header");
@@ -189,7 +207,7 @@ function measureEntry(buf: Buffer, e: Entry): { bytes: number; tags: number } {
   const isXml = /\.(xml|rels)$/i.test(e.name);
   if (e.method === METHOD_STORED) {
     const data = buf.subarray(start, end);
-    return { bytes: data.length, tags: isXml ? countTags(data) : 0 };
+    return isXml ? countNodes(data) : { bytes: data.length, tags: 0, attributes: 0 };
   }
   if (e.method !== METHOD_DEFLATE) {
     // Neither JSZip nor Word produces anything else; refuse rather than guess.
@@ -199,7 +217,7 @@ function measureEntry(buf: Buffer, e: Entry): { bytes: number; tags: number } {
     const data = inflateRawSync(buf.subarray(start, end), {
       maxOutputLength: MAX_ENTRY_BYTES,
     });
-    return { bytes: data.length, tags: isXml ? countTags(data) : 0 };
+    return isXml ? countNodes(data) : { bytes: data.length, tags: 0, attributes: 0 };
   } catch (err) {
     if ((err as NodeJS.ErrnoException)?.code === "ERR_BUFFER_TOO_LARGE") {
       throw new ZipTooLargeError(`an entry inflates past ${MAX_ENTRY_BYTES} bytes`);
@@ -208,11 +226,31 @@ function measureEntry(buf: Buffer, e: Entry): { bytes: number; tags: number } {
   }
 }
 
-/** Every `<` opens a tag of some kind; `indexOf` keeps the scan native. */
-function countTags(data: Buffer): number {
+interface Measured {
+  bytes: number;
+  tags: number;
+  attributes: number;
+}
+
+/**
+ * Every `<` opens a tag of some kind, and every attribute has exactly one
+ * `=`. An `=` in text or inside an attribute value counts too, which only
+ * ever over-counts, and by a rounding error: a proposal does not hold a
+ * million equals signs. `indexOf` keeps the scan native; each count stops
+ * once it is past its cap, so a bomb is not scanned to the end.
+ */
+function countNodes(data: Buffer): Measured {
+  return {
+    bytes: data.length,
+    tags: countByte(data, 0x3c, MAX_XML_TAGS),
+    attributes: countByte(data, 0x3d, MAX_XML_NODES),
+  };
+}
+
+function countByte(data: Buffer, byte: number, cap: number): number {
   let n = 0;
-  for (let i = data.indexOf(0x3c); i !== -1; i = data.indexOf(0x3c, i + 1)) {
-    if (++n > MAX_XML_TAGS) break;
+  for (let i = data.indexOf(byte); i !== -1; i = data.indexOf(byte, i + 1)) {
+    if (++n > cap) break;
   }
   return n;
 }
