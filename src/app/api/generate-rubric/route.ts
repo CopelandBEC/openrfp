@@ -53,7 +53,7 @@ export async function POST(request: NextRequest) {
     return NextResponse.json(
       {
         error:
-          "RFP text could not be extracted. The PDF may need to be OCR'd first.",
+          "RFP text could not be extracted. If it is a scanned PDF, it may need to be OCR'd first.",
       },
       { status: 400 }
     );

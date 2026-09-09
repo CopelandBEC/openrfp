@@ -870,10 +870,14 @@ create policy "responses_insert_own" on public.responses
 
 -- Size and type ceilings enforced by Storage itself, which is the only layer a
 -- direct PUT cannot route around. src/app/api/upload-rfp checks both, but that
--- check only runs for uploads that come through the app.
+-- check only runs for uploads that come through the app. The types match
+-- src/lib/documents/types.ts: PDF and Word (.docx).
 update storage.buckets
    set file_size_limit = 26214400,          -- 25 MB, matching the upload routes
-       allowed_mime_types = array['application/pdf']
+       allowed_mime_types = array[
+         'application/pdf',
+         'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
+       ]
  where id = 'rfp-files';
 
 -- ============================================

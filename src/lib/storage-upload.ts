@@ -1,6 +1,11 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
 import type { StorageError } from "@supabase/storage-js";
 import { isStorageDenied } from "@/lib/storage-errors";
+import {
+  MIME_BY_KIND,
+  UNSUPPORTED_TYPE_MESSAGE,
+  kindOfFile,
+} from "@/lib/documents/types";
 
 /**
  * Put a document into the owner's folder of the `rfp-files` bucket, from the
@@ -13,6 +18,8 @@ import { isStorageDenied } from "@/lib/storage-errors";
  * limit, the bucket's row-level policies already scope the owner to their own
  * folder (`<user id>/...`), and the routes now take the path and read the
  * object back server-side, where outbound fetches are not capped.
+ *
+ * PDF and Word (.docx) are accepted; see lib/documents/types.ts.
  *
  * The path layout is the one the routes always used, so nothing downstream
  * changes: `<user id>/<rfp id>/<timestamp>-<name>` for a proposal and
@@ -38,12 +45,13 @@ export async function uploadDocument(
   if (file.size > MAX_UPLOAD_BYTES) {
     return { ok: false, error: "File is too large. Maximum size is 25MB." };
   }
-  if (file.type !== "application/pdf") {
-    return {
-      ok: false,
-      error:
-        "Only PDF files are supported right now. If you have a Word document, export it to PDF and upload that.",
-    };
+  // The kind decides the content type sent to storage, where the bucket's
+  // allowlist checks it. Browsers without Office installed report a .docx as
+  // octet-stream, which the bucket would refuse; naming the type ourselves
+  // sidesteps that, and the route re-checks the bytes anyway.
+  const kind = kindOfFile(file);
+  if (!kind) {
+    return { ok: false, error: UNSUPPORTED_TYPE_MESSAGE };
   }
 
   const {
@@ -63,7 +71,7 @@ export async function uploadDocument(
   let error: StorageError | null = null;
   try {
     ({ error } = await supabase.storage.from(BUCKET).upload(path, file, {
-      contentType: "application/pdf",
+      contentType: MIME_BY_KIND[kind],
       upsert: false,
     }));
   } catch (thrown) {

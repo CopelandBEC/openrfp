@@ -12,12 +12,13 @@ Built by [Copeland Building Envelope Consulting](https://copelandbec.com) as an 
 2. **Upload vendor responses** — The AI evaluates each response against the rubric, scoring each criterion with a rationale and a direct quote from the proposal as evidence.
 3. **Compare and decide** — Get a side-by-side ranking with comparative analysis, close-call flags, and recommended interview questions. Override any score you disagree with.
 
-**Uploads are text-searchable PDFs only.** The app extracts text with
-`pdf-parse` and evaluates that text; it does not currently send page images to a
-vision model, so diagrams and photos don't contribute to scores. Scanned PDFs
-without an OCR layer are detected and flagged rather than silently scored on
-empty text. Word documents need to be exported to PDF first — native DOCX
-parsing is on the roadmap.
+**Uploads are PDF or Word (.docx), and only their text is read.** The app
+extracts text with `pdf-parse` (PDF) and `mammoth` (DOCX) and evaluates that
+text; it does not currently send page images to a vision model, so diagrams and
+photos don't contribute to scores. Scanned PDFs without an OCR layer are
+detected and flagged rather than silently scored on empty text. Word tables are
+kept one row per line so pricing and schedules stay legible; legacy `.doc` files
+need to be saved as `.docx` or exported to PDF first.
 
 ## Transparency
 
@@ -212,8 +213,8 @@ raising `member_hourly_limit` above it in the table has no effect.
 A guest holds an ordinary JWT, so they can upload straight to the Storage API
 without going through this app. `guest_file_limit` is therefore enforced by the
 storage policy itself, and the `rfp-files` bucket carries a 25 MB size limit and
-a PDF-only MIME allowlist — the upload routes check both, but only for uploads
-that come through the app.
+a MIME allowlist of PDF and DOCX — the upload routes check both, but only for
+uploads that come through the app.
 
 The per-IP ceiling is defence in depth rather than a hard boundary: it needs
 `IP_HASH_SECRET` set to be active at all, it exempts signed-in members so a
@@ -343,7 +344,7 @@ policies already scope each owner to their own folder, and outbound reads inside
 a function are not limited. The path layout is unchanged:
 `<user id>/<rfp id>/<timestamp>-<name>` for a proposal and
 `<user id>/<timestamp>-<name>` for an RFP. The bucket itself enforces the 25 MB
-and PDF-only limits, so the browser-side checks are a courtesy, not the guard.
+and PDF/DOCX limits, so the browser-side checks are a courtesy, not the guard.
 
 Each path is claimed before it is read, in the `upload_claims` table, through
 database functions the caller cannot bypass — see the `Upload claims` section

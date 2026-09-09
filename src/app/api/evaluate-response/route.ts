@@ -100,7 +100,7 @@ export async function POST(request: NextRequest) {
     return NextResponse.json(
       {
         error:
-          "This response has no extractable text. The PDF may need to be OCR'd first.",
+          "This response has no extractable text. If it is a scanned PDF, it may need to be OCR'd first.",
       },
       { status: 400 }
     );

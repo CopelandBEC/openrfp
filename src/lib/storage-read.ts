@@ -1,5 +1,6 @@
 import type { SupabaseClient, User } from "@supabase/supabase-js";
 import { BUCKET, MAX_UPLOAD_BYTES } from "@/lib/storage-upload";
+import { ACCEPTED_MIME_TYPES, UNSUPPORTED_TYPE_MESSAGE } from "@/lib/documents/types";
 
 /**
  * Read back a document the browser put in storage, on the server.
@@ -73,13 +74,8 @@ export async function downloadDocument(
   if (data.size > MAX_UPLOAD_BYTES) {
     return { ok: false, status: 400, error: "File too large. Maximum 25MB." };
   }
-  if (data.type && data.type !== "application/pdf") {
-    return {
-      ok: false,
-      status: 400,
-      error:
-        "Only PDF files are supported right now. If you have a Word document, export it to PDF and upload that.",
-    };
+  if (data.type && !ACCEPTED_MIME_TYPES.includes(data.type)) {
+    return { ok: false, status: 400, error: UNSUPPORTED_TYPE_MESSAGE };
   }
   return {
     ok: true,
