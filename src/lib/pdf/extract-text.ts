@@ -1,3 +1,5 @@
+import { DocumentTooLargeError, MAX_TEXT_CHARS } from "@/lib/documents/limits";
+
 export interface PdfExtractionResult {
   text: string;
   pageCount: number;
@@ -6,37 +8,84 @@ export interface PdfExtractionResult {
 }
 
 /**
+ * Pages are extracted this many at a time, and the running total is charged
+ * against the text budget between batches. One page per batch: pdf-parse
+ * walks its page list once per call, which costs about a tenth over one
+ * call at twenty thousand pages, measured, and every page in a batch is
+ * text built before the budget gets a look. What
+ * one page may hold is still bounded only by pdf.js, which decodes its
+ * content streams whole; that needs pdf.js driven directly, and is tracked
+ * separately.
+ */
+const PAGES_PER_BATCH = 1;
+
+/**
  * Extract text from a PDF using pdf-parse (PDFParse class).
  * Returns the extracted text, page count, and an OCR heuristic.
  *
  * Takes the bytes directly rather than a path: writing the upload to /tmp
  * first meant an attacker-controlled filename landed in a filesystem path,
  * and the cleanup unlink was not in a finally block.
+ *
+ * pdf-parse's getText() parses every page and joins them before returning,
+ * so a single call would build the whole string before anything of ours
+ * could measure it. Pages are asked for in batches instead, and the running
+ * total is charged against the budget shared with the .docx path. The batch
+ * texts are joined exactly as pdf-parse joins them, so the output is the
+ * same as one call would give.
+ *
+ * pdf.js transfers the bytes it is given to its worker, which leaves the
+ * caller's array detached and empty. It is handed a copy so the caller's
+ * bytes are still there afterwards; nothing reads them today, but a hash or
+ * a re-upload added later would otherwise see nothing and not know it.
  */
 export async function extractPdfText(
   data: Uint8Array
 ): Promise<PdfExtractionResult> {
-  let parser: { getText: () => Promise<{ text?: string; pages?: unknown[] }>; destroy: () => Promise<void> } | null =
-    null;
+  let parser: {
+    getText: (params?: { first?: number; last?: number }) => Promise<{
+      text: string;
+      total: number;
+    }>;
+    destroy: () => Promise<void>;
+  } | null = null;
   try {
     const { PDFParse } = await import("pdf-parse");
 
-    parser = new PDFParse({ data });
-    const result = await parser.getText();
+    parser = new PDFParse({ data: data.slice() });
 
-    const text = result.text || "";
-    const pageCount = result.pages?.length || 1;
-    const textPerPage = text.length / pageCount;
+    const parts: string[] = [];
+    let chars = 0;
+    let pageCount = 0;
+    for (let first = 1; ; first += PAGES_PER_BATCH) {
+      const batch = await parser.getText({ first, last: first + PAGES_PER_BATCH - 1 });
+      pageCount = batch.total;
+      chars += batch.text.length;
+      if (chars > MAX_TEXT_CHARS) {
+        throw new DocumentTooLargeError(
+          `PDF renders to more than ${MAX_TEXT_CHARS} characters of text`,
+          "shorten"
+        );
+      }
+      parts.push(batch.text);
+      if (first + PAGES_PER_BATCH > pageCount) break;
+    }
+
+    const text = parts.join("");
+    const pages = pageCount || 1;
+    const textPerPage = text.length / pages;
     // Heuristic: if average text per page is < 100 chars, likely scanned
     const likelyScanned = textPerPage < 100;
 
     return {
       text,
-      pageCount,
+      pageCount: pages,
       textPerPage,
       likelyScanned,
     };
   } catch (error) {
+    // Too large is an answer, not a failure: the route tells the user so.
+    if (error instanceof DocumentTooLargeError) throw error;
     // The caller reports this to the user as "may need OCR", which is the
     // right guess for a real scan but hides a broken parser completely.
     console.error(

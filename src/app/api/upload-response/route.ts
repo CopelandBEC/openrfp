@@ -3,6 +3,7 @@ import { createClient } from "@/lib/supabase/server";
 import {
   UnsupportedDocumentError,
   DocumentTooLargeError,
+  documentTooLargeMessage,
   extractDocumentText,
 } from "@/lib/documents/extract-text";
 import { isGuest } from "@/lib/auth/guest";
@@ -156,10 +157,7 @@ export async function POST(request: NextRequest) {
       // route can hold. Logged, since a real proposal never trips it.
       console.error("Refused oversized document:", err.message);
       return NextResponse.json(
-        {
-          error:
-            "That Word file expands to more than can be processed. Export it to PDF and upload that instead.",
-        },
+        { error: documentTooLargeMessage(err) },
         { status: 413 }
       );
     }

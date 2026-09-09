@@ -1,8 +1,9 @@
 import { extractPdfText } from "@/lib/pdf/extract-text";
 import { extractDocxText } from "@/lib/documents/extract-docx";
 import { kindFromName, type DocumentKind } from "@/lib/documents/types";
+import { DocumentTooLargeError } from "@/lib/documents/limits";
 
-export { DocumentTooLargeError } from "@/lib/documents/zip-bounds";
+export { DocumentTooLargeError };
 
 export interface DocumentExtractionResult {
   kind: DocumentKind;
@@ -22,6 +23,22 @@ export class UnsupportedDocumentError extends Error {
     super("Unsupported document type");
     this.name = "UnsupportedDocumentError";
   }
+}
+
+/**
+ * What to tell the user when a document is refused as too large. The error
+ * says what would help — see TooLargeRemedy — because the file name cannot:
+ * a Word file that trips the text budget renders the same text as a PDF and
+ * would be refused again, and PDF bytes may arrive under a .docx name.
+ *
+ * A response holds one file per vendor, so "split it" is not advice anyone
+ * can follow; a proposal past ten million characters is carrying bulk that
+ * is not the proposal, and that is what to leave out.
+ */
+export function documentTooLargeMessage(err: DocumentTooLargeError): string {
+  return err.remedy === "export-to-pdf"
+    ? "That Word file expands to more than can be processed. Export it to PDF and upload that instead."
+    : "That document holds more text than can be processed at once, far more than a proposal needs. Upload a version without the bulk attachments or appendices.";
 }
 
 /** Below this many characters per page, treat the document as unreadable. */

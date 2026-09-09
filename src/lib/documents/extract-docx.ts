@@ -1,6 +1,7 @@
 import JSZip from "jszip";
 import mammoth from "mammoth";
-import { DocumentTooLargeError, assertZipWithinBounds } from "@/lib/documents/zip-bounds";
+import { assertZipWithinBounds } from "@/lib/documents/zip-bounds";
+import { DocumentTooLargeError, MAX_TEXT_CHARS } from "@/lib/documents/limits";
 
 export interface DocxExtractionResult {
   text: string;
@@ -109,8 +110,6 @@ async function readPageCount(buffer: Buffer): Promise<number> {
  * is spent. Nesting is capped too; nothing legitimate nests tables eight
  * deep.
  */
-/** Well above any real proposal (a thousand pages is a few million). */
-export const MAX_TEXT_CHARS = 10_000_000;
 const MAX_TABLE_DEPTH = 8;
 
 const BLOCK_TAGS = new Set([
@@ -144,7 +143,8 @@ export function htmlToText(html: string): string {
     written += chars;
     if (written > MAX_TEXT_CHARS) {
       throw new DocumentTooLargeError(
-        `Document renders to more than ${MAX_TEXT_CHARS} characters of text`
+        `Document renders to more than ${MAX_TEXT_CHARS} characters of text`,
+        "shorten"
       );
     }
   };
@@ -179,7 +179,8 @@ export function htmlToText(html: string): string {
         newline();
         if (tables.length >= MAX_TABLE_DEPTH) {
           throw new DocumentTooLargeError(
-            `Tables nested more than ${MAX_TABLE_DEPTH} deep`
+            `Tables nested more than ${MAX_TABLE_DEPTH} deep`,
+            "export-to-pdf"
           );
         }
         tables.push({ rows: [], carry: new Map(), row: null });
@@ -288,7 +289,8 @@ function assertTreeWithinBudget(document: unknown): void {
     if (typeof node.anchor === "string") chars += node.anchor.length;
     if (chars > MAX_TEXT_CHARS) {
       throw new DocumentTooLargeError(
-        `Document holds more than ${MAX_TEXT_CHARS} characters of text and link targets`
+        `Document holds more than ${MAX_TEXT_CHARS} characters of text and link targets`,
+        "export-to-pdf"
       );
     }
     // Pushed one at a time: spreading a million children into one call is

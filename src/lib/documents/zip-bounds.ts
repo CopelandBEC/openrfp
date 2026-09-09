@@ -1,4 +1,5 @@
 import { inflateRawSync } from "node:zlib";
+import { DocumentTooLargeError } from "@/lib/documents/limits";
 
 /**
  * Refuse a zip that would expand beyond what one request can hold.
@@ -53,17 +54,9 @@ export const MAX_XML_TAGS = 600_000;
  */
 export const MAX_XML_NODES = 1_200_000;
 
-/** A document that would take more than one request can hold, however so. */
-export class DocumentTooLargeError extends Error {
-  constructor(message: string) {
-    super(message);
-    this.name = "DocumentTooLargeError";
-  }
-}
-
 export class ZipTooLargeError extends DocumentTooLargeError {
   constructor(detail: string) {
-    super(`Zip expands beyond the limit: ${detail}`);
+    super(`Zip expands beyond the limit: ${detail}`, "export-to-pdf");
     this.name = "ZipTooLargeError";
   }
 }
