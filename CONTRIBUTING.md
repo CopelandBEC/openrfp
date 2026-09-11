@@ -29,7 +29,7 @@ npm run dev
 ```
 
 You'll need a Supabase project (run `supabase/schema.sql` in the SQL Editor) and
-an API key for any OpenAI-compatible AI provider. See the README for details.
+an API key for any OpenAI-compatible AI provider. See [docs/DEPLOYING.md](docs/DEPLOYING.md) for details.
 
 ## Before you open a pull request
 
