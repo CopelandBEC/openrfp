@@ -3,6 +3,7 @@ import { createClient } from "@/lib/supabase/server";
 import { MagicLinkForm } from "./magic-link-form";
 import { GuestStartButton } from "@/components/guest-start-button";
 import { isGuest } from "@/lib/auth/guest";
+import { FeedbackLink } from "@/components/feedback-link";
 
 export default async function LoginPage({
   searchParams,
@@ -90,6 +91,12 @@ export default async function LoginPage({
             </div>
           </>
         )}
+
+        {/* No header on this screen to hang it off, so the link sits under the
+            card — the one place on the page with room for it. */}
+        <div className="flex justify-center pt-2">
+          <FeedbackLink labelFrom="always" className="text-xs" />
+        </div>
       </div>
     </div>
   );

@@ -3,6 +3,7 @@ import Link from "next/link";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { GuestStartButton } from "@/components/guest-start-button";
+import { FeedbackLink } from "@/components/feedback-link";
 
 export const metadata: Metadata = {
   title: "OpenRFP — Intelligent RFP evaluation, free and open source",
@@ -25,6 +26,7 @@ export default function LandingPage() {
             </span>
           </div>
           <div className="flex items-center gap-4">
+            <FeedbackLink labelFrom="always" className="hidden sm:flex" />
             <a
               href="https://github.com/CopelandBEC/openrfp"
               target="_blank"
