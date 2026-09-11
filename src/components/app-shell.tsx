@@ -5,6 +5,7 @@ import Link from "next/link"
 import { CheckIcon } from "lucide-react"
 
 import { createClient } from "@/lib/supabase/client"
+import { FeedbackLink } from "@/components/feedback-link"
 import {
   embeddedCount,
   firstEmbedded,
@@ -191,6 +192,7 @@ export function AppHeader({
               <span className="text-sm text-muted-foreground">{label}</span>
             )
           )}
+          <FeedbackLink />
           {action}
         </div>
       </div>
