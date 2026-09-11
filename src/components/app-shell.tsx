@@ -192,7 +192,7 @@ export function AppHeader({
               <span className="text-sm text-muted-foreground">{label}</span>
             )
           )}
-          <FeedbackLink />
+          <FeedbackLink labelFrom="md" />
           {action}
         </div>
       </div>

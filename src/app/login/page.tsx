@@ -95,7 +95,7 @@ export default async function LoginPage({
         {/* No header on this screen to hang it off, so the link sits under the
             card — the one place on the page with room for it. */}
         <div className="flex justify-center pt-2">
-          <FeedbackLink compact={false} className="text-xs" />
+          <FeedbackLink labelFrom="always" className="text-xs" />
         </div>
       </div>
     </div>

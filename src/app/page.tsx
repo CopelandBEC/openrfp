@@ -26,7 +26,7 @@ export default function LandingPage() {
             </span>
           </div>
           <div className="flex items-center gap-4">
-            <FeedbackLink />
+            <FeedbackLink labelFrom="always" className="hidden sm:flex" />
             <a
               href="https://github.com/CopelandBEC/openrfp"
               target="_blank"
