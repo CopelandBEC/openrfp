@@ -44,8 +44,13 @@ export function MagicLinkForm({ guest = false }: MagicLinkFormProps) {
     // Resolves immediately with a null token when Turnstile isn't configured.
     const { ok, token, reason } = await captcha.getToken();
     if (!ok) {
-      captcha.reset();
-      setState({ status: "error", message: captchaMessage(reason) });
+      setState({
+        status: "error",
+        message: captchaMessage(
+          reason,
+          "Please try again — if it keeps failing, sign-in is temporarily unavailable."
+        ),
+      });
       return;
     }
 

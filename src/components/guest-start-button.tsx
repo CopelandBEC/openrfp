@@ -71,11 +71,13 @@ export function GuestStartButton({
     if (!user) {
       const { ok, token, reason } = await captcha.getToken();
       if (!ok) {
-        // Leave the widget ready for another attempt: a rejected challenge
-        // holds a spent state that execute() alone will not clear.
-        captcha.reset();
         setPending(false);
-        setError(captchaMessage(reason));
+        setError(
+          captchaMessage(
+            reason,
+            "Please try again, or sign in with an email link instead."
+          )
+        );
         return;
       }
 

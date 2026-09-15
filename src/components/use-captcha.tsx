@@ -48,6 +48,16 @@ export function useCaptcha() {
     waiters.current.splice(0).forEach((resolve) => resolve(result));
   }, []);
 
+  /**
+   * Hand the widget back in a state that can run again. A spent challenge
+   * leaves an in-flight flag that execute() alone will not clear, so without
+   * this the *next* attempt quietly does nothing and rides the timeout out.
+   * Done here rather than in each caller so no caller can forget.
+   */
+  const clearForRetry = useCallback(() => {
+    controlsRef.current?.reset();
+  }, []);
+
   const handleToken = useCallback(
     (token: string | null) => {
       tokenRef.current = token;
@@ -68,8 +78,9 @@ export function useCaptcha() {
       tokenRef.current = null;
       if (reason === "unavailable") unavailable.current = true;
       release({ ok: false, token: null, reason });
+      clearForRetry();
     },
-    [release]
+    [release, clearForRetry]
   );
 
   const registerControls = useCallback((controls: TurnstileControls) => {
@@ -110,12 +121,18 @@ export function useCaptcha() {
         };
         const timer = setTimeout(() => {
           waiters.current = waiters.current.filter((w) => w !== waiter);
+          // Deliberately not sticky, unlike a script that never loaded. A
+          // widget that went quiet for fifteen seconds may only have been
+          // slow; we have no evidence it is gone, and claiming otherwise
+          // would lock the visitor out until they reloaded. The retry costs
+          // another wait, which is the honest price of not knowing.
+          clearForRetry();
           resolve({ ok: false, token: null, reason: "unavailable" });
         }, timeoutMs);
         waiters.current.push(waiter);
       });
     },
-    []
+    [clearForRetry]
   );
 
   /**
@@ -141,16 +158,22 @@ export function useCaptcha() {
 export const CAPTCHA_BLOCKED_MESSAGE =
   "The verification check didn't load — an ad blocker or privacy extension may be blocking it. Allow this site and try again.";
 
-const CAPTCHA_REJECTED_MESSAGE =
-  "The verification check didn't pass. Please try again, or sign in with an email link instead.";
-
 /**
  * Copy for a failed getToken(). The distinction matters to the visitor: one
  * of these is worth acting on, and the other means the site is misconfigured
  * and no amount of allowlisting on their end will help.
+ *
+ * `rejectedAdvice` is per caller because the useful suggestion differs. The
+ * guest button can send someone to email sign-in; the email form itself
+ * cannot, since a second submission meets the very same challenge — and in
+ * the misconfigured-key case that this distinction exists for, it would fail
+ * the very same way.
  */
-export function captchaMessage(reason: TurnstileFailure | undefined): string {
+export function captchaMessage(
+  reason: TurnstileFailure | undefined,
+  rejectedAdvice = "Please try again in a moment."
+): string {
   return reason === "rejected"
-    ? CAPTCHA_REJECTED_MESSAGE
+    ? `The verification check didn't pass. ${rejectedAdvice}`
     : CAPTCHA_BLOCKED_MESSAGE;
 }
