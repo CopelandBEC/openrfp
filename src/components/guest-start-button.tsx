@@ -4,7 +4,7 @@ import { useState } from "react";
 import { useRouter } from "next/navigation";
 import { Button } from "@/components/ui/button";
 import { createClient } from "@/lib/supabase/client";
-import { useCaptcha, CAPTCHA_BLOCKED_MESSAGE } from "@/components/use-captcha";
+import { useCaptcha, captchaMessage } from "@/components/use-captcha";
 
 /**
  * Polls local session storage until the new session is readable. Purely local
@@ -69,10 +69,10 @@ export function GuestStartButton({
     } = await supabase.auth.getUser();
 
     if (!user) {
-      const { ok, token } = await captcha.getToken();
+      const { ok, token, reason } = await captcha.getToken();
       if (!ok) {
         setPending(false);
-        setError(CAPTCHA_BLOCKED_MESSAGE);
+        setError(captchaMessage(reason));
         return;
       }
 

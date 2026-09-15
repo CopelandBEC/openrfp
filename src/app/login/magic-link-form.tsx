@@ -2,10 +2,7 @@
 
 import { useState } from "react";
 import { createClient } from "@/lib/supabase/client";
-import {
-  useCaptcha,
-  CAPTCHA_BLOCKED_MESSAGE,
-} from "@/components/use-captcha";
+import { useCaptcha, captchaMessage } from "@/components/use-captcha";
 
 type State =
   | { status: "idle" }
@@ -45,9 +42,12 @@ export function MagicLinkForm({ guest = false }: MagicLinkFormProps) {
     // Required whenever CAPTCHA protection is enabled on the Supabase project:
     // that switch covers the OTP endpoint too, not just anonymous sign-in.
     // Resolves immediately with a null token when Turnstile isn't configured.
-    const { ok, token } = await captcha.getToken();
+    const { ok, token, reason } = await captcha.getToken();
     if (!ok) {
-      setState({ status: "error", message: CAPTCHA_BLOCKED_MESSAGE });
+      setState({
+        status: "error",
+        message: captchaMessage(reason),
+      });
       return;
     }
 
@@ -71,6 +71,15 @@ export function MagicLinkForm({ guest = false }: MagicLinkFormProps) {
     captcha.reset();
 
     if (error) {
+      // Surfaced for the same reason the guest button logs its sign-in
+      // failure: the likeliest causes here are configuration rather than
+      // anything the visitor did — a site key missing from this build, or a
+      // Turnstile secret that doesn't match it — and the copy below is too
+      // generic to tell them apart. Without this line those strings never
+      // reach the console on this page at all, leaving /login the one route
+      // where the failure can't be diagnosed from the browser.
+      console.error("Magic link request failed:", error.message);
+
       const noSuchAccount =
         guest &&
         (error.code === "otp_disabled" ||

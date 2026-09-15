@@ -61,6 +61,18 @@ function loadTurnstile(): Promise<TurnstileApi> {
   return loader;
 }
 
+/**
+ * Why no token is coming.
+ *
+ * "unavailable" means the widget never got far enough to have an opinion —
+ * the script was blocked, or it loaded and then went silent. "rejected" means
+ * Turnstile ran and refused, which on a correctly configured deployment is
+ * rare and on a misconfigured one (site key not valid for this hostname,
+ * key/secret mismatch) is every single time. Retrying helps in the first case
+ * and never in the second, so the two must not share a message.
+ */
+export type TurnstileFailure = "unavailable" | "rejected";
+
 export interface TurnstileControls {
   /** Start (or restart) a challenge. Safe to call before the widget exists. */
   execute: () => void;
@@ -69,8 +81,10 @@ export interface TurnstileControls {
 }
 
 interface TurnstileProps {
-  /** Fires with a fresh token, or null when the token expires or errors out. */
+  /** Fires with a fresh token, or null when the token expires. */
   onToken: (token: string | null) => void;
+  /** Fires when no token is coming, so callers stop waiting for one. */
+  onFailure?: (kind: TurnstileFailure) => void;
   /** Receives execute/reset once, on mount. */
   registerControls?: (controls: TurnstileControls) => void;
 }
@@ -84,18 +98,24 @@ interface TurnstileProps {
  * most the one that was actually used. "interaction-only" keeps it invisible
  * unless Cloudflare wants something from the user.
  */
-export function Turnstile({ onToken, registerControls }: TurnstileProps) {
+export function Turnstile({
+  onToken,
+  onFailure,
+  registerControls,
+}: TurnstileProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const widgetIdRef = useRef<string | null>(null);
   const onTokenRef = useRef(onToken);
+  const onFailureRef = useRef(onFailure);
   const executeRequested = useRef(false);
   const executing = useRef(false);
 
-  // Kept in a ref so re-rendering the parent with a new closure doesn't tear
+  // Kept in refs so re-rendering the parent with new closures doesn't tear
   // down and re-render the widget, which would drop a valid token.
   useEffect(() => {
     onTokenRef.current = onToken;
-  }, [onToken]);
+    onFailureRef.current = onFailure;
+  }, [onToken, onFailure]);
 
   const execute = useCallback(() => {
     if (executing.current) return;
@@ -136,14 +156,29 @@ export function Turnstile({ onToken, registerControls }: TurnstileProps) {
           onTokenRef.current(token);
         };
 
+        const fail = (kind: TurnstileFailure) => {
+          executing.current = false;
+          onTokenRef.current(null);
+          onFailureRef.current?.(kind);
+        };
+
         widgetIdRef.current = api.render(container, {
           sitekey: TURNSTILE_SITE_KEY,
           appearance: "interaction-only",
           execution: "execute",
           callback: (token: string) => settle(token),
           "expired-callback": () => settle(null),
-          "error-callback": () => settle(null),
-          "timeout-callback": () => settle(null),
+          "error-callback": (code?: string) => {
+            // Cloudflare's own console warning carries the code too, but it
+            // reads as a warning among warnings; this one names the feature
+            // that just broke. 600010 means the site key is not valid for
+            // this hostname, which is the usual cause on a fresh deployment.
+            console.error(
+              `Turnstile: challenge failed (error ${code ?? "unknown"}).`
+            );
+            fail("rejected");
+          },
+          "timeout-callback": () => fail("rejected"),
         });
 
         if (executeRequested.current) {
@@ -152,9 +187,8 @@ export function Turnstile({ onToken, registerControls }: TurnstileProps) {
         }
       })
       .catch((err: unknown) => {
-        // Leave the token null; getToken() times out and reports the script
-        // as blocked, which is the honest description of what happened.
         console.error("Turnstile:", err instanceof Error ? err.message : err);
+        onFailureRef.current?.("unavailable");
       });
 
     return () => {
