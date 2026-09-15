@@ -158,22 +158,23 @@ export function useCaptcha() {
 export const CAPTCHA_BLOCKED_MESSAGE =
   "The verification check didn't load — an ad blocker or privacy extension may be blocking it. Allow this site and try again.";
 
+const CAPTCHA_REJECTED_MESSAGE =
+  "The verification check didn't pass. Please try again — if it keeps failing, sign-in is temporarily unavailable.";
+
 /**
  * Copy for a failed getToken(). The distinction matters to the visitor: one
  * of these is worth acting on, and the other means the site is misconfigured
  * and no amount of allowlisting on their end will help.
  *
- * `rejectedAdvice` is per caller because the useful suggestion differs. The
- * guest button can send someone to email sign-in; the email form itself
- * cannot, since a second submission meets the very same challenge — and in
- * the misconfigured-key case that this distinction exists for, it would fail
- * the very same way.
+ * Neither message offers another way in, and that is deliberate. Supabase's
+ * CAPTCHA switch is project-wide, so every route — guest sign-in, magic link,
+ * any we add later — is gated by this same widget and this same site key.
+ * There is no CAPTCHA-free path to point at, and in the misconfigured-key
+ * case that `rejected` exists to name, sending someone to a second flow means
+ * sending them somewhere guaranteed to fail the same way.
  */
-export function captchaMessage(
-  reason: TurnstileFailure | undefined,
-  rejectedAdvice = "Please try again in a moment."
-): string {
+export function captchaMessage(reason: TurnstileFailure | undefined): string {
   return reason === "rejected"
-    ? `The verification check didn't pass. ${rejectedAdvice}`
+    ? CAPTCHA_REJECTED_MESSAGE
     : CAPTCHA_BLOCKED_MESSAGE;
 }

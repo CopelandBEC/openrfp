@@ -46,10 +46,7 @@ export function MagicLinkForm({ guest = false }: MagicLinkFormProps) {
     if (!ok) {
       setState({
         status: "error",
-        message: captchaMessage(
-          reason,
-          "Please try again — if it keeps failing, sign-in is temporarily unavailable."
-        ),
+        message: captchaMessage(reason),
       });
       return;
     }

@@ -72,12 +72,7 @@ export function GuestStartButton({
       const { ok, token, reason } = await captcha.getToken();
       if (!ok) {
         setPending(false);
-        setError(
-          captchaMessage(
-            reason,
-            "Please try again, or sign in with an email link instead."
-          )
-        );
+        setError(captchaMessage(reason));
         return;
       }
 
