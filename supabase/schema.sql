@@ -522,12 +522,32 @@ create policy "users delete own files" on storage.objects
 create table if not exists public.ai_limits (
   id boolean primary key default true check (id),
   member_hourly_limit integer not null default 20,
-  guest_hourly_limit integer not null default 6,
-  guest_ip_hourly_limit integer not null default 12,
+  guest_hourly_limit integer not null default 18,
+  guest_ip_hourly_limit integer not null default 36,
   guest_rfp_limit integer not null default 3,
   guest_file_limit integer not null default 12
 );
 insert into public.ai_limits (id) values (true) on conflict (id) do nothing;
+-- One evaluation costs a guest N + 2 AI calls: the rubric, one per proposal,
+-- and the ranking. At 6 a four-proposal RFP spent the entire hour arriving at
+-- the ranking, with nothing left for the retry after a proposal that failed,
+-- or for the re-score that editing the rubric forces.
+--
+-- 18 covers a clean pass over any RFP a guest can assemble — the 12-file cap
+-- means at most 11 proposals, so 13 calls — and a rubric edit with a full
+-- re-score (2N + 3 calls in total) up to seven proposals. A revision cycle on
+-- a larger set than that spills into the next hour, which is the deliberate
+-- edge of this: guests are the unauthenticated spend path, and the ceiling is
+-- sized for finishing an evaluation, not for iterating on the biggest one
+-- allowed. The per-IP ceiling stays at twice the per-session one, as it was.
+--
+-- These defaults reach a FRESH install only. On an existing one the table is
+-- already there and the row already inserted, so re-running this file changes
+-- nothing — raising the ceiling on a deployment is an explicit UPDATE from the
+-- SQL editor (docs/DEPLOYING.md gives it). That is deliberate: this row is the
+-- operator's control surface, and a limit they chose is not something a schema
+-- re-run gets to overwrite. No value comparison here could tell a limit left
+-- at the old default from one deliberately set to it.
 alter table public.ai_limits add column if not exists
   guest_file_limit integer not null default 12;
 -- How many times per rolling hour one account may send a document for
