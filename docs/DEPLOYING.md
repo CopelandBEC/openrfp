@@ -208,10 +208,12 @@ stored server-side, never raise it. Defaults:
 | `guest_rfp_limit` | 3 | RFPs one guest session may create |
 | `guest_file_limit` | 12 | Uploaded files, and response rows, per guest |
 
-One evaluation costs `N + 2` AI calls — the rubric, one per proposal, then the
-ranking — so size `guest_hourly_limit` against the largest RFP you want a guest
-to finish in one sitting, with room for a retry and for the re-score that
-editing the rubric forces.
+Sizing `guest_hourly_limit`: one evaluation costs `N + 2` AI calls — the
+rubric, one per proposal, then the ranking. Editing the rubric afterwards
+marks every score stale and forces a re-score, so a run with one revision
+cycle costs `2N + 3`. At 18, a guest can finish any RFP the 12-file cap lets
+them assemble (11 proposals, 13 calls), and can revise one of up to seven
+proposals; revising a larger set spills into the next hour.
 
 Change one with an `UPDATE` from the SQL Editor:
 
@@ -219,7 +221,11 @@ Change one with an `UPDATE` from the SQL Editor:
 update public.ai_limits set guest_hourly_limit = 4;
 ```
 
-Re-running `schema.sql` will not overwrite a value you set this way.
+The table is the operator's control surface, so `schema.sql` never writes to
+this row beyond the first `insert` — the defaults in it apply to a **fresh
+install only**, and re-running the file will not overwrite a limit you set.
+The flip side is that raising a ceiling on a deployment that already exists
+takes the `UPDATE` above; a `git pull` alone does nothing.
 
 `AI_RATE_LIMIT_PER_HOUR` still works and is applied on top, but only ever as
 the stricter of the two. It defaults to off (0); if you set it, remember that
