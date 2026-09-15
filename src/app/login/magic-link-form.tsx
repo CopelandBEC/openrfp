@@ -71,6 +71,15 @@ export function MagicLinkForm({ guest = false }: MagicLinkFormProps) {
     captcha.reset();
 
     if (error) {
+      // Surfaced for the same reason the guest button logs its sign-in
+      // failure: the likeliest causes here are configuration rather than
+      // anything the visitor did — a site key missing from this build, or a
+      // Turnstile secret that doesn't match it — and the copy below is too
+      // generic to tell them apart. Without this line those strings never
+      // reach the console on this page at all, leaving /login the one route
+      // where the failure can't be diagnosed from the browser.
+      console.error("Magic link request failed:", error.message);
+
       const noSuchAccount =
         guest &&
         (error.code === "otp_disabled" ||
