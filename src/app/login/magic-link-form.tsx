@@ -2,10 +2,7 @@
 
 import { useState } from "react";
 import { createClient } from "@/lib/supabase/client";
-import {
-  useCaptcha,
-  CAPTCHA_BLOCKED_MESSAGE,
-} from "@/components/use-captcha";
+import { useCaptcha, captchaMessage } from "@/components/use-captcha";
 
 type State =
   | { status: "idle" }
@@ -45,9 +42,10 @@ export function MagicLinkForm({ guest = false }: MagicLinkFormProps) {
     // Required whenever CAPTCHA protection is enabled on the Supabase project:
     // that switch covers the OTP endpoint too, not just anonymous sign-in.
     // Resolves immediately with a null token when Turnstile isn't configured.
-    const { ok, token } = await captcha.getToken();
+    const { ok, token, reason } = await captcha.getToken();
     if (!ok) {
-      setState({ status: "error", message: CAPTCHA_BLOCKED_MESSAGE });
+      captcha.reset();
+      setState({ status: "error", message: captchaMessage(reason) });
       return;
     }
 
