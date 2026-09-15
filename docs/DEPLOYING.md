@@ -203,16 +203,23 @@ stored server-side, never raise it. Defaults:
 | Column | Default | Applies to |
 | --- | --- | --- |
 | `member_hourly_limit` | 20 | AI calls/hour for a signed-in account |
-| `guest_hourly_limit` | 6 | AI calls/hour for one guest session |
-| `guest_ip_hourly_limit` | 12 | AI calls/hour for all guests behind one IP |
+| `guest_hourly_limit` | 18 | AI calls/hour for one guest session |
+| `guest_ip_hourly_limit` | 36 | AI calls/hour for all guests behind one IP |
 | `guest_rfp_limit` | 3 | RFPs one guest session may create |
 | `guest_file_limit` | 12 | Uploaded files, and response rows, per guest |
+
+One evaluation costs `N + 2` AI calls — the rubric, one per proposal, then the
+ranking — so size `guest_hourly_limit` against the largest RFP you want a guest
+to finish in one sitting, with room for a retry and for the re-score that
+editing the rubric forces.
 
 Change one with an `UPDATE` from the SQL Editor:
 
 ```sql
 update public.ai_limits set guest_hourly_limit = 4;
 ```
+
+Re-running `schema.sql` will not overwrite a value you set this way.
 
 `AI_RATE_LIMIT_PER_HOUR` still works and is applied on top, but only ever as
 the stricter of the two. It defaults to off (0); if you set it, remember that

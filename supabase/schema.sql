@@ -522,12 +522,29 @@ create policy "users delete own files" on storage.objects
 create table if not exists public.ai_limits (
   id boolean primary key default true check (id),
   member_hourly_limit integer not null default 20,
-  guest_hourly_limit integer not null default 6,
-  guest_ip_hourly_limit integer not null default 12,
+  guest_hourly_limit integer not null default 18,
+  guest_ip_hourly_limit integer not null default 36,
   guest_rfp_limit integer not null default 3,
   guest_file_limit integer not null default 12
 );
 insert into public.ai_limits (id) values (true) on conflict (id) do nothing;
+-- One evaluation costs a guest N + 2 AI calls: the rubric, one per proposal,
+-- and the ranking. At 6 a four-proposal RFP spent the entire hour landing on
+-- the ranking, with nothing left for the retry after a failed proposal or for
+-- the re-score that editing the rubric forces. 18 covers a full pass over the
+-- largest RFP the file cap allows (12 files, so 13 calls) plus a revision
+-- cycle; the per-IP ceiling stays at twice that, as it was.
+--
+-- The defaults above only reach a fresh install — the table is already there
+-- on an existing one, and the row is already inserted. Move it here instead,
+-- and only where it still holds the old default, so a re-run of this file
+-- doesn't undo an operator who deliberately tuned it from the SQL editor.
+update public.ai_limits
+   set guest_hourly_limit = 18
+ where guest_hourly_limit = 6;
+update public.ai_limits
+   set guest_ip_hourly_limit = 36
+ where guest_ip_hourly_limit = 12;
 alter table public.ai_limits add column if not exists
   guest_file_limit integer not null default 12;
 -- How many times per rolling hour one account may send a document for
