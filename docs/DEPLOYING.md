@@ -159,12 +159,39 @@ Two settings make this work, both under **Authentication**:
    to take effect; adding it to an existing deployment's settings alone does
    nothing.
 
+3. **List every hostname you serve on the Turnstile widget**, under Cloudflare
+   → Turnstile → your widget → Settings → Hostnames. The apex and `www` are
+   separate entries, and so is any Vercel preview domain you want the guest
+   flow to work on. Cloudflare checks this list when the challenge runs, so
+   edits take effect immediately — no redeploy, no key change.
+
+   **This is the one that bites after a domain move.** Point the app at a
+   custom domain without updating the list and every visitor meets a challenge
+   that refuses to run — and because the CAPTCHA switch is project-wide, that
+   means nobody can sign in at all, by any route.
+
 **Turnstile is not optional on a public deployment.** Guest sessions are the
 only signup path with no email step, and each one carries its own allowance of
 calls against your server-side AI key. Without a CAPTCHA, minting unlimited
 sessions is a page reload. Supabase verifies the token at its own auth endpoint,
 so the check holds even against a caller who bypasses this app's UI entirely.
 Leave the variable unset in local development, where it is only friction.
+
+#### When sign-in stops working
+
+All three surface as the same thing on screen — a verification step that fails
+— and the visitor-facing message can only guess between them. The browser
+console on the affected page tells you which one you actually have.
+
+| Console message | Cause | Fix |
+| --- | --- | --- |
+| `[Cloudflare Turnstile] Error: 110200` | The hostname is not on the widget's list — Cloudflare declines to render a challenge at all. | Add it under the widget's **Hostnames**. Takes effect at once. |
+| `captcha protection: request disallowed (no captcha_token found)` | The app sent no token: `NEXT_PUBLIC_TURNSTILE_SITE_KEY` is unset *in that build*. | Set it in Vercel and **redeploy** — the value is inlined at build time. |
+| `captcha protection: request disallowed (invalid-input-response)` | A token arrived but the Supabase secret does not match that widget. | Re-paste the widget's secret under **Attack Protection**. |
+
+In every case the magic-link form is down alongside the guest button, since
+the Supabase switch covers both. So if sign-in broke and the last thing you
+changed was a domain, start at the hostname list.
 
 #### Guest limits
 
