@@ -399,49 +399,6 @@ export default function RubricPage({
               </div>
             )}
 
-            {/* A rubric that does not total 100 cannot be accepted, so the
-                reason Accept is disabled is stated up top while the handles
-                are still in view — amber, because it is a state to fix, not a
-                failure.
-
-                The live region is a constant sr-only line, not the visible
-                copy: a drag moves the total on every percent, and announcing
-                each one would talk over the slider's own value feedback. This
-                says once that the warning appeared; the numbers are there to
-                be read. */}
-            {!weightsValid && (
-              <div
-                className="mt-6 flex items-start gap-2.5 rounded-lg border px-4 py-3"
-                style={{
-                  backgroundColor:
-                    "color-mix(in oklab, var(--status-warning) 12%, transparent)",
-                  borderColor:
-                    "color-mix(in oklab, var(--status-warning) 45%, transparent)",
-                }}
-              >
-                <TriangleAlertIcon
-                  className="mt-0.5 size-4 shrink-0"
-                  style={{ color: "var(--status-warning)" }}
-                  aria-hidden="true"
-                />
-                <p className="text-xs leading-snug text-foreground">
-                  <span role="status" className="sr-only">
-                    Weights need to total 100%.
-                  </span>
-                  Weights total{" "}
-                  <span className="font-semibold tabular-nums">
-                    {formatPercent(weightSum)}%
-                  </span>
-                  , not 100%. Drag a handle on the bars below — or edit a weight
-                  in the criteria — to{" "}
-                  {weightSum > 100
-                    ? `shed ${formatPercent(weightSum - 100)} points`
-                    : `add ${formatPercent(100 - weightSum)} points`}
-                  .
-                </p>
-              </div>
-            )}
-
             {/* --------------------------------------------------------------
              * Weight summary
              *
@@ -481,6 +438,50 @@ export default function RubricPage({
                 </div>
               ))}
             </div>
+
+            {/* A rubric that does not total 100 cannot be accepted, so the
+                reason Accept is disabled is stated at the foot of the table,
+                where it can appear and disappear without shifting the bars —
+                mid-drag, a row moving under the cursor is the whole problem.
+                Amber, because it is a state to fix, not a failure.
+
+                The live region is a constant sr-only line, not the visible
+                copy: a drag moves the total on every percent, and announcing
+                each one would talk over the slider's own value feedback. This
+                says once that the warning appeared; the numbers are there to
+                be read. */}
+            {!weightsValid && (
+              <div
+                className="mt-3 flex items-start gap-2.5 rounded-lg border px-4 py-3"
+                style={{
+                  backgroundColor:
+                    "color-mix(in oklab, var(--status-warning) 12%, transparent)",
+                  borderColor:
+                    "color-mix(in oklab, var(--status-warning) 45%, transparent)",
+                }}
+              >
+                <TriangleAlertIcon
+                  className="mt-0.5 size-4 shrink-0"
+                  style={{ color: "var(--status-warning)" }}
+                  aria-hidden="true"
+                />
+                <p className="text-xs leading-snug text-foreground">
+                  <span role="status" className="sr-only">
+                    Weights need to total 100%.
+                  </span>
+                  Weights total{" "}
+                  <span className="font-semibold tabular-nums">
+                    {formatPercent(weightSum)}%
+                  </span>
+                  , not 100%. Drag a handle on a bar above — or edit a weight in
+                  the criteria — to{" "}
+                  {weightSum > 100
+                    ? `shed ${formatPercent(weightSum - 100)} points`
+                    : `add ${formatPercent(100 - weightSum)} points`}
+                  .
+                </p>
+              </div>
+            )}
 
             {/* --------------------------------------------------------------
              * The criteria themselves
