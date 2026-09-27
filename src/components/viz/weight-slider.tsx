@@ -35,39 +35,48 @@ export function WeightSlider({
   className?: string
 }) {
   const trackRef = useRef<HTMLDivElement>(null)
-  const draggingRef = useRef(false)
+  const activePointerRef = useRef<number | null>(null)
   const [dragging, setDragging] = useState(false)
   const clamped = Math.max(0, Math.min(100, value))
 
-  const clamp = (n: number) => Math.max(0, Math.min(100, Math.round(n)))
-
+  /** Pointer drags are continuous, so they snap to whole percents. */
   const percentAt = (clientX: number) => {
     const track = trackRef.current
     if (!track) return clamped
     const rect = track.getBoundingClientRect()
     if (rect.width === 0) return clamped
-    return clamp(((clientX - rect.left) / rect.width) * 100)
+    const percent = ((clientX - rect.left) / rect.width) * 100
+    return Math.round(Math.max(0, Math.min(100, percent)))
   }
 
-  const nudge = (delta: number) => onChange(clamp(clamped + delta))
+  /** Keyboard steps are exact: a 33.3 nudged right is 34.3, not 34, so the
+   * advertised ±1 holds. Hundredths kill any float drift from the addition. */
+  const nudge = (delta: number) => {
+    const next = Math.max(0, Math.min(100, clamped + delta))
+    onChange(Math.round(next * 100) / 100)
+  }
 
   const onPointerDown = (e: PointerEvent<HTMLDivElement>) => {
+    // Primary button only: a right- or middle-click should open its menu or
+    // paste, not move the weight. And one pointer at a time, so a second
+    // finger on a touch screen cannot jump the value mid-drag.
+    if (e.button !== 0 || activePointerRef.current !== null) return
+    activePointerRef.current = e.pointerId
     e.currentTarget.focus({ preventScroll: true })
     e.currentTarget.setPointerCapture(e.pointerId)
-    draggingRef.current = true
     setDragging(true)
     onChange(percentAt(e.clientX))
   }
 
   const onPointerMove = (e: PointerEvent<HTMLDivElement>) => {
-    if (!draggingRef.current) return
+    if (activePointerRef.current !== e.pointerId) return
     const next = percentAt(e.clientX)
     if (next !== clamped) onChange(next)
   }
 
   const endDrag = (e: PointerEvent<HTMLDivElement>) => {
-    if (!draggingRef.current) return
-    draggingRef.current = false
+    if (activePointerRef.current !== e.pointerId) return
+    activePointerRef.current = null
     setDragging(false)
     if (e.currentTarget.hasPointerCapture(e.pointerId)) {
       e.currentTarget.releasePointerCapture(e.pointerId)
