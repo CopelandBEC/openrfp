@@ -402,10 +402,15 @@ export default function RubricPage({
             {/* A rubric that does not total 100 cannot be accepted, so the
                 reason Accept is disabled is stated up top while the handles
                 are still in view — amber, because it is a state to fix, not a
-                failure. */}
+                failure.
+
+                The live region is a constant sr-only line, not the visible
+                copy: a drag moves the total on every percent, and announcing
+                each one would talk over the slider's own value feedback. This
+                says once that the warning appeared; the numbers are there to
+                be read. */}
             {!weightsValid && (
               <div
-                role="status"
                 className="mt-6 flex items-start gap-2.5 rounded-lg border px-4 py-3"
                 style={{
                   backgroundColor:
@@ -420,6 +425,9 @@ export default function RubricPage({
                   aria-hidden="true"
                 />
                 <p className="text-xs leading-snug text-foreground">
+                  <span role="status" className="sr-only">
+                    Weights need to total 100%.
+                  </span>
                   Weights total{" "}
                   <span className="font-semibold tabular-nums">
                     {formatPercent(weightSum)}%
@@ -672,14 +680,13 @@ export default function RubricPage({
  * The weight total, as a status rather than a banner.
  *
  * It is only interesting when it is wrong, so when it is right it says so in
- * one quiet line instead of a full-width green bar.
+ * one quiet line instead of a full-width green bar. Visual only — the banner
+ * above owns the live announcement, and two regions reading the same total is
+ * one too many.
  */
 function WeightTotal({ sum, valid }: { sum: number; valid: boolean }) {
   return (
-    <span
-      className="flex items-center gap-1.5 text-xs font-medium"
-      role={valid ? undefined : "alert"}
-    >
+    <span className="flex items-center gap-1.5 text-xs font-medium">
       <span
         className="size-2 rounded-full"
         style={{
