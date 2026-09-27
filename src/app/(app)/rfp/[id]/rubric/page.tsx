@@ -2,7 +2,12 @@
 
 import { useEffect, useState, use, useCallback, useMemo } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
-import { PlusIcon, RotateCcwIcon, Trash2Icon } from "lucide-react";
+import {
+  PlusIcon,
+  RotateCcwIcon,
+  Trash2Icon,
+  TriangleAlertIcon,
+} from "lucide-react";
 import { createClient } from "@/lib/supabase/client";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -21,7 +26,7 @@ import {
   ErrorState,
   WorkingState,
 } from "@/components/stage-state";
-import { ScoreBar } from "@/components/viz/score-bar";
+import { WeightSlider } from "@/components/viz/weight-slider";
 import { readApiResponse } from "@/lib/api-response";
 
 // ---------------------------------------------------------------------------
@@ -82,6 +87,12 @@ function normalizeRubric(row: Record<string, unknown>): Rubric {
     (row.total_weight as number | undefined) ??
     (Array.isArray(raw) ? undefined : raw?.total_weight);
   return { ...(row as Omit<Rubric, "criteria">), criteria, total_weight };
+}
+
+/** Weights can carry decimals — a model's 33.3, or someone typing 12.5 —
+ * so round sums to hundredths before printing float noise like 99.899999. */
+function formatPercent(value: number): string {
+  return String(Math.round(value * 100) / 100);
 }
 
 /** Build a fresh criterion with empty scale descriptions for a 1-5 scale */
@@ -388,13 +399,49 @@ export default function RubricPage({
               </div>
             )}
 
+            {/* A rubric that does not total 100 cannot be accepted, so the
+                reason Accept is disabled is stated up top while the handles
+                are still in view — amber, because it is a state to fix, not a
+                failure. */}
+            {!weightsValid && (
+              <div
+                role="status"
+                className="mt-6 flex items-start gap-2.5 rounded-lg border px-4 py-3"
+                style={{
+                  backgroundColor:
+                    "color-mix(in oklab, var(--status-warning) 12%, transparent)",
+                  borderColor:
+                    "color-mix(in oklab, var(--status-warning) 45%, transparent)",
+                }}
+              >
+                <TriangleAlertIcon
+                  className="mt-0.5 size-4 shrink-0"
+                  style={{ color: "var(--status-warning)" }}
+                  aria-hidden="true"
+                />
+                <p className="text-xs leading-snug text-foreground">
+                  Weights total{" "}
+                  <span className="font-semibold tabular-nums">
+                    {formatPercent(weightSum)}%
+                  </span>
+                  , not 100%. Drag a handle on the bars below — or edit a weight
+                  in the criteria — to{" "}
+                  {weightSum > 100
+                    ? `shed ${formatPercent(weightSum - 100)} points`
+                    : `add ${formatPercent(100 - weightSum)} points`}
+                  .
+                </p>
+              </div>
+            )}
+
             {/* --------------------------------------------------------------
              * Weight summary
              *
              * The weights are the rubric's real content — they decide the
              * ranking — so they get the top of the page as bars rather than
              * being buried as a number in each of eight open forms. Bars are
-             * comparable at a glance in a way "30%… 25%… 20%" is not.
+             * comparable at a glance in a way "30%… 25%… 20%" is not, and the
+             * handle at each bar's end makes them adjustable in place.
              * ----------------------------------------------------------- */}
             <div className="mt-8 flex items-center justify-between gap-4">
               <h2 className="text-sm font-semibold text-foreground">
@@ -403,23 +450,24 @@ export default function RubricPage({
               <WeightTotal sum={weightSum} valid={weightsValid} />
             </div>
 
-            <div className="mt-3 space-y-2.5">
+            <div className="mt-3 space-y-1.5">
               {criteria.map((criterion, index) => (
                 <div
                   key={criterion.id || index}
-                  className="animate-reveal grid grid-cols-[1fr_auto] items-center gap-x-3 gap-y-1"
+                  className="animate-reveal -mx-2 grid grid-cols-[1fr_auto] items-center gap-x-3 gap-y-0.5 rounded-lg px-2 transition-colors hover:bg-muted/40"
                   style={{ ["--reveal-i" as string]: index }}
                 >
                   <span className="truncate text-xs text-foreground">
                     {criterion.name}
                   </span>
                   <span className="text-xs font-semibold tabular-nums text-foreground">
-                    {criterion.weight}%
+                    {formatPercent(criterion.weight)}%
                   </span>
-                  <ScoreBar
-                    percent={criterion.weight}
+                  <WeightSlider
+                    value={criterion.weight}
+                    onChange={(weight) => updateCriterion(index, { weight })}
+                    label={`Weight for ${criterion.name}`}
                     index={index}
-                    thickness="thin"
                     className="col-span-2"
                   />
                 </div>
@@ -466,7 +514,7 @@ export default function RubricPage({
                         )}
                       </span>
                       <span className="shrink-0 text-xs font-semibold tabular-nums text-foreground">
-                        {criterion.weight}%
+                        {formatPercent(criterion.weight)}%
                       </span>
                     </AccordionTrigger>
 
@@ -603,7 +651,7 @@ export default function RubricPage({
                 <p className="text-xs text-muted-foreground">
                   {weightsValid
                     ? "Weights total 100%. Ready to score proposals."
-                    : `Weights total ${weightSum}% — adjust to 100% to continue.`}
+                    : `Weights total ${formatPercent(weightSum)}% — adjust to 100% to continue.`}
                 </p>
                 <Button
                   onClick={acceptRubric}
@@ -637,12 +685,14 @@ function WeightTotal({ sum, valid }: { sum: number; valid: boolean }) {
         style={{
           backgroundColor: valid
             ? "var(--status-good)"
-            : "var(--status-critical)",
+            : "var(--status-warning)",
         }}
         aria-hidden="true"
       />
-      <span className={valid ? "text-muted-foreground" : "text-destructive"}>
-        {valid ? "Totals 100%" : `Totals ${sum}% — should be 100%`}
+      <span className={valid ? "text-muted-foreground" : "text-foreground"}>
+        {valid
+          ? "Totals 100%"
+          : `Totals ${formatPercent(sum)}% — should be 100%`}
       </span>
     </span>
   );
