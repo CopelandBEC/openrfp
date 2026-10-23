@@ -20,7 +20,7 @@ that control the evaluation model. If you only want to *use* OpenRFP, see the
 
 ### Prerequisites
 
-- Node.js 18+ 
+- Node.js 24 (`engines` in `package.json` requires 24.x) 
 - A [Supabase](https://supabase.com) account (free tier)
 - A [Fireworks AI](https://fireworks.ai) API key
 - A [Vercel](https://vercel.com) account (for deployment)
